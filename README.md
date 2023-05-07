@@ -1,1 +1,1 @@
-# maxwell-server
+# maxwell-backend-rust
