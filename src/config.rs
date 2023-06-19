@@ -1,19 +1,25 @@
-use std::num::NonZeroUsize;
+use std::{env::current_dir, path::PathBuf};
 
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
+use serde::de::{Deserialize, Deserializer};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
   pub http_port: u32,
   pub master_endpoints: Vec<String>,
-  #[serde(default = "available_parallelism")]
-  pub puller_number: u16,
+  pub puller: PullerConfig,
   pub db: DbConfig,
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PullerConfig {
+  pub max_offset_dif: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DbConfig {
+  #[serde(deserialize_with = "deserialize_path")]
   pub path: String,
   pub seriesdb: SeriesdbConfig,
 }
@@ -32,14 +38,32 @@ pub struct SeriesdbConfig {
   pub max_background_jobs: i32,
 }
 
-fn available_parallelism() -> u16 {
-  let n = std::thread::available_parallelism()
-    .unwrap_or_else(|_err| NonZeroUsize::new(8 as usize).unwrap())
-    .get();
-  if n >= std::u16::MAX as usize {
-    std::u16::MAX
+// fn available_parallelism() -> u16 {
+//   let n = std::thread::available_parallelism()
+//     .unwrap_or_else(|_err| NonZeroUsize::new(8 as usize).unwrap())
+//     .get();
+//   if n >= std::u16::MAX as usize {
+//     std::u16::MAX
+//   } else {
+//     n as u16
+//   }
+// }
+
+fn deserialize_path<'de, D>(deserializer: D) -> Result<String, D::Error>
+where D: Deserializer<'de> {
+  let path: String = Deserialize::deserialize(deserializer)?;
+  let path = PathBuf::from(path);
+  if path.is_absolute() {
+    Ok(path.display().to_string())
   } else {
-    n as u16
+    current_dir()
+      .with_context(|| format!("Failed to get current dir"))
+      .map_err(serde::de::Error::custom)?
+      .join(path)
+      .display()
+      .to_string()
+      .parse()
+      .map_err(serde::de::Error::custom)
   }
 }
 

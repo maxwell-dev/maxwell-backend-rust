@@ -1,8 +1,11 @@
 http_port = 20000
 master_endpoints = ["localhost:8081"]
 
+[puller]
+max_offset_dif = 1000
+
 [db]
-path = "/Users/xuchaoqian/codebase/bitbros/maxwell/maxwell-backend-rust/data/"
+path = "data"
 
 [db.seriesdb]
 level_zero_file_num_compaction_trigger = 4

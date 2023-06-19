@@ -1,18 +1,18 @@
 use std::{
-  hash::{BuildHasher, Hash, Hasher},
-  rc::Rc,
+  hash::{Hash, Hasher},
   sync::Arc,
 };
 
 use actix::{prelude::*, Actor, Addr, Message as ActixMessage};
-use ahash::{AHashMap, RandomState as AHasher};
+use ahash::RandomState as AHasher;
+use anyhow::Result;
 use bytes::Bytes;
 use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use indexmap::IndexSet;
 use maxwell_protocol::{self, *};
 use maxwell_utils::prelude::ArbiterPool;
 use once_cell::sync::OnceCell;
-use seriesdb::prelude::{Coder, Cursor, Db, Error as SeriesdbError, Table, TtlTable};
+use seriesdb::prelude::{Coder, Cursor, Db, Table, TtlTable};
 
 use crate::handler::IdAddressMap;
 use crate::{
@@ -21,24 +21,26 @@ use crate::{
 };
 
 pub struct Puller {
-  id: u16,
-  pending_pull_reqs: AHashMap<String, IndexSet<Rc<PullMsg>, AHasher>>,
+  topic: String,
+  table: Arc<TtlTable>,
+  last_id: u64,
+  pending_pull_reqs: IndexSet<PullMsg, AHasher>,
 }
 
 impl Actor for Puller {
   type Context = Context<Self>;
 
   fn started(&mut self, _ctx: &mut Self::Context) {
-    log::info!("Puller actor started: id: {:?}", self.id);
+    log::info!("Puller actor started: topic: {:?}", self.topic);
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {
-    log::info!("Puller actor stopping: id: {:?}", self.id);
+    log::info!("Puller actor stopping: topic: {:?}", self.topic);
     Running::Stop
   }
 
   fn stopped(&mut self, _: &mut Self::Context) {
-    log::info!("Puller actor stopped: id: {:?}", self.id);
+    log::info!("Puller actor stopped: topic: {:?}", self.topic);
   }
 }
 
@@ -78,6 +80,7 @@ pub struct NotifyMsg {
   pub topic: String,
   pub offset: u64,
   pub value: Bytes,
+  pub timestamp: u32,
 }
 
 impl Handler<NotifyMsg> for Puller {
@@ -86,52 +89,53 @@ impl Handler<NotifyMsg> for Puller {
   #[inline]
   fn handle(&mut self, notify_msg: NotifyMsg, _ctx: &mut Context<Self>) -> Self::Result {
     log::info!("notify_msg: {:?}", notify_msg);
-    self.notify(notify_msg)
+    self.notify_all(notify_msg)
   }
 }
 
 impl Puller {
   #[inline]
-  pub fn new(id: u16) -> Self {
-    Self { id, pending_pull_reqs: AHashMap::with_capacity(1024) }
+  pub fn new(topic: String) -> Result<Self> {
+    let table = DB.open_table(&topic)?;
+    let last_id = Self::recover_last_id(&table);
+    Ok(Self { topic, table, last_id, pending_pull_reqs: IndexSet::with_hasher(AHasher::new()) })
   }
 
   #[inline]
-  pub fn start(id: u16) -> Addr<Self> {
-    Puller::start_in_arbiter(&ArbiterPool::singleton().fetch_arbiter(), move |_ctx| Puller::new(id))
+  pub fn start(topic: String) -> Result<Addr<Self>> {
+    let puller = Puller::new(topic)?;
+    Ok(Puller::start_in_arbiter(&ArbiterPool::singleton().fetch_arbiter(), move |_ctx| puller))
   }
 
-  // @TODO negative offset
   fn pull(&mut self, pull_msg: PullMsg) {
-    let pull_req = &pull_msg.0;
-    match DB.open_table(&pull_req.topic) {
-      Ok(table) => {
-        let msgs = Self::get_since(&table, pull_req.offset as u64, pull_req.limit);
-        if msgs.len() > 0 {
-          Self::notify_one(&pull_req, msgs);
-          self.remove_from_pendings(&pull_msg);
-        } else {
-          self.add_to_pendings(pull_msg);
-        }
-      }
-      Err(err) => {
-        Self::notify_err(&pull_req, err);
+    let pull_offset = self.adjust_pull_offset(pull_msg.0.offset);
+    if pull_offset > self.last_id {
+      self.add_to_pendings(pull_msg);
+    } else {
+      let pull_req = &pull_msg.0;
+      let msgs = self.get_since(pull_offset, pull_req.limit);
+      if msgs.len() > 0 {
+        Self::notify_one(&pull_req, msgs);
+        self.remove_from_pendings(&pull_msg);
+      } else {
+        self.add_to_pendings(pull_msg);
       }
     }
   }
 
-  fn get_since(table: &Arc<TtlTable>, key: u64, limit: u32) -> Vec<Msg> {
+  fn get_since(&self, key: u64, limit: u32) -> Vec<Msg> {
     let mut values = Vec::<Msg>::new();
     let mut count = 0;
-    let mut cursor = table.new_cursor();
+    let mut cursor = self.table.new_cursor();
     cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(key));
     while cursor.is_valid() {
       if count >= limit {
         break;
       }
       let key = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
-      let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(cursor.value().unwrap());
-      values.push(Msg { offset: key, value: value.into(), timestamp: 0 });
+      let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
+      let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
+      values.push(Msg { offset: key, value: value.into(), timestamp: timestamp as u64 });
       cursor.next();
       count += 1;
     }
@@ -152,125 +156,115 @@ impl Puller {
     }
   }
 
-  fn notify_err(pull_req: &PullReq, err: SeriesdbError) {
-    if let Some(addr) = IdAddressMap::singleton().get(pull_req.conn1_ref) {
-      addr.do_send(
-        maxwell_protocol::Error2Rep {
-          code: 1,
-          desc: format!("Failed to pull: err: {:?}", err),
-          conn0_ref: pull_req.conn0_ref,
-          conn1_ref: pull_req.conn1_ref,
-          r#ref: pull_req.r#ref,
-        }
-        .into_enum(),
-      )
-    }
-  }
+  fn notify_all(&mut self, notify_msg: NotifyMsg) {
+    self.update_last_id(notify_msg.offset);
 
-  fn notify(&mut self, notify_msg: NotifyMsg) {
-    if let Some(pendings) = self.pending_pull_reqs.get_mut(&notify_msg.topic) {
-      let len = { pendings.len() };
-      for i in (0..len).rev() {
-        if let Some(pull_msg) = { pendings.get_index(i).cloned() } {
-          if notify_msg.offset - 1 == pull_msg.0.offset as u64 {
-            Self::notify_one(
-              &pull_msg.0,
-              vec![Msg {
-                offset: notify_msg.offset,
-                value: notify_msg.value.clone().into(),
-                timestamp: 0,
-              }],
-            );
-            pendings.remove(&pull_msg);
-          } else {
-            match DB.open_table(&pull_msg.0.topic) {
-              Ok(table) => {
-                let msgs = Self::get_since(&table, pull_msg.0.offset as u64, pull_msg.0.limit);
-                if msgs.len() > 0 {
-                  Self::notify_one(&pull_msg.0, msgs);
-                  pendings.remove(&pull_msg);
-                }
-              }
-              Err(err) => {
-                log::warn!("Failed to open table: topic: {:?}, err: {:?}", &pull_msg.0.topic, err);
-                pendings.remove(&pull_msg);
-              }
-            }
+    let mut notified_pull_reqs: Vec<usize> = vec![];
+    let len = self.pending_pull_reqs.len();
+    for i in 0..len {
+      if let Some(pull_msg) = { self.pending_pull_reqs.get_index(i) } {
+        let pull_offset = self.adjust_pull_offset(pull_msg.0.offset);
+        if notify_msg.offset == pull_offset {
+          Self::notify_one(
+            &pull_msg.0,
+            vec![Msg {
+              offset: notify_msg.offset,
+              value: notify_msg.value.clone().into(),
+              timestamp: notify_msg.timestamp as u64,
+            }],
+          );
+          notified_pull_reqs.push(i);
+        } else {
+          let msgs = self.get_since(pull_msg.0.offset as u64, pull_msg.0.limit);
+          if msgs.len() > 0 {
+            Self::notify_one(&pull_msg.0, msgs);
+            notified_pull_reqs.push(i);
           }
         }
       }
     }
-  }
-
-  fn add_to_pendings(&mut self, pull_msg: PullMsg) {
-    if let Some(pendings) = self.pending_pull_reqs.get_mut(&pull_msg.0.topic) {
-      pendings.insert(Rc::new(pull_msg));
-    } else {
-      let topic = pull_msg.0.topic.clone();
-      let mut pendings = IndexSet::with_hasher(AHasher::new());
-      pendings.insert(Rc::new(pull_msg));
-      self.pending_pull_reqs.insert(topic, pendings);
+    for i in notified_pull_reqs {
+      self.pending_pull_reqs.swap_remove_index(i);
     }
   }
 
+  fn add_to_pendings(&mut self, pull_msg: PullMsg) {
+    self.pending_pull_reqs.insert(pull_msg);
+  }
+
   fn remove_from_pendings(&mut self, pull_msg: &PullMsg) {
-    self
-      .pending_pull_reqs
-      .get_mut(&pull_msg.0.topic)
-      .and_then(|pendings| Some(pendings.remove(pull_msg)));
+    self.pending_pull_reqs.remove(pull_msg);
+  }
+
+  fn adjust_pull_offset(&self, offset: i64) -> u64 {
+    if offset >= 0 {
+      if offset as u64 + CONFIG.puller.max_offset_dif < self.last_id {
+        self.last_id - CONFIG.puller.max_offset_dif
+      } else {
+        offset as u64
+      }
+    } else {
+      let mut offset_dif = offset.abs() as u64;
+      if offset_dif > CONFIG.puller.max_offset_dif {
+        offset_dif = CONFIG.puller.max_offset_dif;
+      }
+      if offset_dif < self.last_id {
+        self.last_id - offset_dif
+      } else {
+        0
+      }
+    }
+  }
+
+  fn recover_last_id(table: &Arc<TtlTable>) -> u64 {
+    let table = table.clone().enhance::<u64, Bytes, MsgCoder>();
+    if let Some(last_id) = table.get_last_key() {
+      last_id
+    } else {
+      1
+    }
+  }
+
+  fn update_last_id(&mut self, last_id: u64) {
+    if self.last_id < last_id {
+      self.last_id = last_id;
+    }
   }
 }
 
 pub struct PullerMgr {
-  pullers: DashMap<u16, Addr<Puller>, AHasher>,
-  hash_builder: AHasher,
+  pullers: DashMap<String, Addr<Puller>, AHasher>,
 }
 
 static PULLER_MGR: OnceCell<PullerMgr> = OnceCell::new();
 
 impl PullerMgr {
   fn new() -> Self {
-    PullerMgr {
-      pullers: DashMap::with_capacity_and_hasher(CONFIG.puller_number as usize, AHasher::default()),
-      hash_builder: AHasher::default(),
-    }
+    PullerMgr { pullers: DashMap::with_capacity_and_hasher(1000, AHasher::default()) }
   }
 
   pub fn singleton() -> &'static Self {
     PULLER_MGR.get_or_init(|| PullerMgr::new())
   }
 
-  pub fn get_puller(&self, topic: &String) -> Addr<Puller> {
-    let id = self.get_id(topic);
-    match self.pullers.entry(id) {
+  pub fn get_puller(&self, topic: &String) -> Result<Addr<Puller>> {
+    match self.pullers.entry(topic.clone()) {
       DashEntry::Occupied(mut occupied) => {
         let puller = occupied.get();
         if puller.connected() {
-          puller.clone()
+          Ok(puller.clone())
         } else {
-          let puller = Puller::start(id);
+          let puller = Puller::start(occupied.key().clone())?;
           occupied.insert(puller.clone());
-          puller
+          Ok(puller)
         }
       }
       DashEntry::Vacant(vacant) => {
-        let puller = Puller::start(id);
+        let puller = Puller::start(vacant.key().clone())?;
         vacant.insert(puller.clone());
-        puller
+        Ok(puller)
       }
     }
-  }
-
-  fn get_id(&self, topic: &String) -> u16 {
-    let hash = self.gen_hash(topic);
-    hash.div_euclid(CONFIG.puller_number as u64) as u16
-  }
-
-  #[inline]
-  fn gen_hash(&self, topic: &String) -> u64 {
-    let mut hasher = self.hash_builder.build_hasher();
-    topic.hash(&mut hasher);
-    hasher.finish()
   }
 }
 
@@ -288,7 +282,7 @@ mod tests {
   #[actix::test]
   async fn test_send_msg() {
     {
-      let puller = Puller::start(1);
+      let puller = Puller::start("huobi:btcusdt.1m".to_owned()).unwrap();
       for _ in 1..2 {
         let pull_req = maxwell_protocol::PullReq {
           topic: "huobi:btcusdt.1m".to_owned(),

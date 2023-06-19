@@ -9,7 +9,7 @@ use actix_web_actors::ws;
 use ahash::RandomState as AHasher;
 use anyhow::Result;
 use dashmap::DashMap;
-use maxwell_protocol::{self, SendError, *};
+use maxwell_protocol::{self, *};
 use once_cell::sync::OnceCell;
 
 use crate::{
@@ -98,7 +98,7 @@ impl HandlerInner {
           Ok(()) => maxwell_protocol::ProtocolMsg::None,
           Err(err) => maxwell_protocol::ErrorRep {
             code: 1,
-            desc: format!("Failed to push: err: {:?}", err),
+            desc: format!("Failed to pull: err: {:?}", err),
             r#ref,
           }
           .into_enum(),
@@ -133,7 +133,7 @@ impl HandlerInner {
   }
 
   fn handle_pull_req(&self, req: PullReq) -> Result<()> {
-    let puller = PullerMgr::singleton().get_puller(&req.topic);
+    let puller = PullerMgr::singleton().get_puller(&req.topic)?;
     puller.try_send(PullMsg(req))?;
     Ok(())
   }
@@ -200,17 +200,18 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for Handler {
 }
 
 impl actix::Handler<ProtocolMsg> for Handler {
-  type Result = Result<ProtocolMsg, SendError>;
+  type Result = Result<ProtocolMsg, HandleError<ProtocolMsg>>;
 
   fn handle(&mut self, protocol_msg: ProtocolMsg, ctx: &mut Self::Context) -> Self::Result {
     let inner = self.inner.clone();
-    ctx.spawn(async move { inner.handle_internal_msg(protocol_msg).await }.into_actor(self).map(
-      move |res, _act, ctx| {
+    async move { inner.handle_internal_msg(protocol_msg).await }
+      .into_actor(self)
+      .map(move |res, _act, ctx| {
         if res.is_some() {
           ctx.binary(maxwell_protocol::encode(&res));
         }
-      },
-    ));
+      })
+      .spawn(ctx);
     Ok(ProtocolMsg::None)
   }
 }

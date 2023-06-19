@@ -32,7 +32,7 @@ pub struct Pusher {
 
 impl Pusher {
   pub fn new(topic: String) -> Result<Self> {
-    let puller = PullerMgr::singleton().get_puller(&topic);
+    let puller = PullerMgr::singleton().get_puller(&topic)?;
     let table = DB.open_table(&topic)?;
     Ok(Pusher { topic, id_seed: AtomicU64::new(Self::recover_last_id(&table)), table, puller })
   }
@@ -41,9 +41,9 @@ impl Pusher {
     let id = self.id_seed.fetch_add(1, Ordering::Relaxed);
     let id_bytes = <MsgCoder as Coder<u64, Bytes>>::encode_key(id);
     let value_bytes = Bytes::from(req.value);
-    let result = self.table.put(id_bytes, value_bytes.clone())?;
-    self.puller.do_send(NotifyMsg { topic: req.topic, offset: id, value: value_bytes });
-    Ok(result)
+    let timestamp = self.table.put_timestamped(id_bytes, value_bytes.clone())?;
+    self.puller.do_send(NotifyMsg { topic: req.topic, offset: id, value: value_bytes, timestamp });
+    Ok(())
   }
 
   fn recover_last_id(table: &Arc<TtlTable>) -> u64 {
