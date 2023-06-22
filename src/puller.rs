@@ -204,7 +204,7 @@ impl Puller {
         offset as u64
       }
     } else {
-      let mut offset_dif = offset.abs() as u64;
+      let mut offset_dif = offset.abs() as u64 - 1;
       if offset_dif > CONFIG.puller.max_offset_dif {
         offset_dif = CONFIG.puller.max_offset_dif;
       }
