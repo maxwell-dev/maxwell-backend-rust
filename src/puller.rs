@@ -7,6 +7,7 @@ use actix::{prelude::*, Actor, Addr, Message as ActixMessage};
 use ahash::RandomState as AHasher;
 use anyhow::Result;
 use bytes::Bytes;
+use chrono::prelude::*;
 use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use indexmap::IndexSet;
 use maxwell_protocol::{self, *};
@@ -23,8 +24,8 @@ use crate::{
 pub struct Puller {
   topic: String,
   table: Arc<TtlTable>,
-  last_id: u64,
-  pending_pull_reqs: IndexSet<PullMsg, AHasher>,
+  last_offset: u64,
+  pending_pull_msgs: IndexSet<PullMsg, AHasher>,
 }
 
 impl Actor for Puller {
@@ -70,6 +71,7 @@ impl Handler<PullMsg> for Puller {
 
   #[inline]
   fn handle(&mut self, pull_msg: PullMsg, _ctx: &mut Context<Self>) -> Self::Result {
+    log::debug!("pull_msg: {:?}", pull_msg);
     self.pull(pull_msg)
   }
 }
@@ -88,7 +90,7 @@ impl Handler<NotifyMsg> for Puller {
 
   #[inline]
   fn handle(&mut self, notify_msg: NotifyMsg, _ctx: &mut Context<Self>) -> Self::Result {
-    log::info!("notify_msg: {:?}", notify_msg);
+    log::debug!("notify_msg: {:?}", notify_msg);
     self.notify_all(notify_msg)
   }
 }
@@ -97,8 +99,8 @@ impl Puller {
   #[inline]
   pub fn new(topic: String) -> Result<Self> {
     let table = DB.open_table(&topic)?;
-    let last_id = Self::recover_last_id(&table);
-    Ok(Self { topic, table, last_id, pending_pull_reqs: IndexSet::with_hasher(AHasher::new()) })
+    let last_offset = Self::recover_last_offset(&table);
+    Ok(Self { topic, table, last_offset, pending_pull_msgs: IndexSet::with_hasher(AHasher::new()) })
   }
 
   #[inline]
@@ -107,38 +109,75 @@ impl Puller {
     Ok(Puller::start_in_arbiter(&ArbiterPool::singleton().fetch_arbiter(), move |_ctx| puller))
   }
 
-  fn pull(&mut self, pull_msg: PullMsg) {
-    let pull_offset = self.adjust_pull_offset(pull_msg.0.offset);
-    if pull_offset > self.last_id {
-      self.add_to_pendings(pull_msg);
+  fn pull(&mut self, mut pull_msg: PullMsg) {
+    let pull_req = &mut pull_msg.0;
+    if pull_req.offset >= 0 {
+      let adjusted_offset = self.adjust_offset(pull_req.offset as u64);
+      if adjusted_offset > self.last_offset {
+        pull_req.offset = adjusted_offset as i64;
+        self.add_to_pendings(pull_msg);
+      } else {
+        let msgs = self.get_since_by_offset(adjusted_offset, pull_req.limit);
+        if msgs.len() > 0 {
+          Self::notify_one(&pull_req, msgs);
+          self.remove_from_pendings(&pull_msg);
+        } else {
+          pull_req.offset = adjusted_offset as i64;
+          self.add_to_pendings(pull_msg);
+        }
+      }
     } else {
-      let pull_req = &pull_msg.0;
-      let msgs = self.get_since(pull_offset, pull_req.limit);
+      let seconds_elapsed = Self::adjust_seconds_elapsed(pull_req.offset.abs() as u64);
+      let msgs = self.get_until_by_time(seconds_elapsed, pull_req.limit);
       if msgs.len() > 0 {
         Self::notify_one(&pull_req, msgs);
         self.remove_from_pendings(&pull_msg);
       } else {
+        pull_req.offset = (self.last_offset + 1) as i64;
         self.add_to_pendings(pull_msg);
       }
     }
   }
 
-  fn get_since(&self, key: u64, limit: u32) -> Vec<Msg> {
+  fn get_since_by_offset(&self, offset: u64, limit: u32) -> Vec<Msg> {
     let mut values = Vec::<Msg>::new();
     let mut count = 0;
     let mut cursor = self.table.new_cursor();
-    cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(key));
+    cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(offset));
     while cursor.is_valid() {
       if count >= limit {
         break;
       }
-      let key = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
+      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
       let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
-      values.push(Msg { offset: key, value: value.into(), timestamp: timestamp as u64 });
+      values.push(Msg { offset: curr_offset, value: value.into(), timestamp: timestamp as u64 });
       cursor.next();
       count += 1;
     }
+    values
+  }
+
+  fn get_until_by_time(&self, seconds_elapsed: u16, limit: u32) -> Vec<Msg> {
+    let mut values = Vec::<Msg>::new();
+    let mut count = 0;
+    let mut cursor = self.table.new_cursor();
+    cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(self.last_offset));
+    while cursor.is_valid() {
+      if count >= limit {
+        break;
+      }
+      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
+      let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
+      if (timestamp + seconds_elapsed as u32) < (Utc::now().timestamp() as u32) {
+        break;
+      }
+      let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
+      values.push(Msg { offset: curr_offset, value: value.into(), timestamp: timestamp as u64 });
+      cursor.prev();
+      count += 1;
+    }
+    values.reverse();
     values
   }
 
@@ -157,16 +196,16 @@ impl Puller {
   }
 
   fn notify_all(&mut self, notify_msg: NotifyMsg) {
-    self.update_last_id(notify_msg.offset);
+    self.update_last_offset(notify_msg.offset);
 
     let mut notified_pull_reqs: Vec<usize> = vec![];
-    let len = self.pending_pull_reqs.len();
+    let len = self.pending_pull_msgs.len();
     for i in 0..len {
-      if let Some(pull_msg) = { self.pending_pull_reqs.get_index(i) } {
-        let pull_offset = self.adjust_pull_offset(pull_msg.0.offset);
-        if notify_msg.offset == pull_offset {
+      if let Some(pull_msg) = { self.pending_pull_msgs.get_index(i) } {
+        let pull_req: &PullReq = &pull_msg.0;
+        if notify_msg.offset == pull_req.offset as u64 {
           Self::notify_one(
-            &pull_msg.0,
+            pull_req,
             vec![Msg {
               offset: notify_msg.offset,
               value: notify_msg.value.clone().into(),
@@ -175,59 +214,61 @@ impl Puller {
           );
           notified_pull_reqs.push(i);
         } else {
-          let msgs = self.get_since(pull_msg.0.offset as u64, pull_msg.0.limit);
+          let msgs = self.get_since_by_offset(pull_req.offset as u64, pull_req.limit);
           if msgs.len() > 0 {
-            Self::notify_one(&pull_msg.0, msgs);
+            Self::notify_one(pull_req, msgs);
             notified_pull_reqs.push(i);
           }
         }
       }
     }
     for i in notified_pull_reqs {
-      self.pending_pull_reqs.swap_remove_index(i);
+      self.pending_pull_msgs.swap_remove_index(i);
     }
   }
 
+  #[inline]
   fn add_to_pendings(&mut self, pull_msg: PullMsg) {
-    self.pending_pull_reqs.insert(pull_msg);
+    self.pending_pull_msgs.insert(pull_msg);
   }
 
+  #[inline]
   fn remove_from_pendings(&mut self, pull_msg: &PullMsg) {
-    self.pending_pull_reqs.remove(pull_msg);
+    self.pending_pull_msgs.remove(pull_msg);
   }
 
-  fn adjust_pull_offset(&self, offset: i64) -> u64 {
-    if offset >= 0 {
-      if offset as u64 + CONFIG.puller.max_offset_dif < self.last_id {
-        self.last_id - CONFIG.puller.max_offset_dif
-      } else {
-        offset as u64
-      }
+  #[inline]
+  fn adjust_offset(&self, offset: u64) -> u64 {
+    if offset as u64 + CONFIG.puller.max_offset_dif < self.last_offset {
+      self.last_offset - CONFIG.puller.max_offset_dif
     } else {
-      let mut offset_dif = offset.abs() as u64 - 1;
-      if offset_dif > CONFIG.puller.max_offset_dif {
-        offset_dif = CONFIG.puller.max_offset_dif;
-      }
-      if offset_dif < self.last_id {
-        self.last_id - offset_dif
-      } else {
-        0
-      }
+      offset as u64
     }
   }
 
-  fn recover_last_id(table: &Arc<TtlTable>) -> u64 {
+  #[inline]
+  fn adjust_seconds_elapsed(seconds_elapsed: u64) -> u16 {
+    if seconds_elapsed > 300 {
+      300
+    } else {
+      seconds_elapsed as u16
+    }
+  }
+
+  #[inline]
+  fn recover_last_offset(table: &Arc<TtlTable>) -> u64 {
     let table = table.clone().enhance::<u64, Bytes, MsgCoder>();
-    if let Some(last_id) = table.get_last_key() {
-      last_id
+    if let Some(offset) = table.get_last_key() {
+      offset
     } else {
-      1
+      0
     }
   }
 
-  fn update_last_id(&mut self, last_id: u64) {
-    if self.last_id < last_id {
-      self.last_id = last_id;
+  #[inline]
+  fn update_last_offset(&mut self, last_offset: u64) {
+    if self.last_offset < last_offset {
+      self.last_offset = last_offset;
     }
   }
 }
