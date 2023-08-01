@@ -32,16 +32,16 @@ impl Actor for Puller {
   type Context = Context<Self>;
 
   fn started(&mut self, _ctx: &mut Self::Context) {
-    log::info!("Puller actor started: topic: {:?}", self.topic);
+    log::debug!("Puller actor started: topic: {:?}", self.topic);
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {
-    log::info!("Puller actor stopping: topic: {:?}", self.topic);
+    log::debug!("Puller actor stopping: topic: {:?}", self.topic);
     Running::Stop
   }
 
   fn stopped(&mut self, _: &mut Self::Context) {
-    log::info!("Puller actor stopped: topic: {:?}", self.topic);
+    log::debug!("Puller actor stopped: topic: {:?}", self.topic);
   }
 }
 
@@ -229,7 +229,7 @@ impl Puller {
 
   #[inline]
   fn add_to_pendings(&mut self, pull_msg: PullMsg) {
-    self.pending_pull_msgs.insert(pull_msg);
+    self.pending_pull_msgs.replace(pull_msg);
   }
 
   #[inline]
