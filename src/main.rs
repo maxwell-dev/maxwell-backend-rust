@@ -16,8 +16,11 @@ use actix_web_actors::ws;
 use crate::config::CONFIG;
 use crate::{handler::Handler, registrar::Registrar};
 
-async fn index(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-  let resp = ws::start(Handler::new(), &req, stream);
+async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
+  let resp = ws::WsResponseBuilder::new(Handler::new(), &req, stream)
+    .frame_size(CONFIG.server.max_frame_size)
+    .start();
+  log::info!("http req: {:?}, resp: {:?}", req, resp);
   resp
 }
 
@@ -29,9 +32,14 @@ async fn main() {
   registrar.start();
 
   HttpServer::new(move || {
-    App::new().wrap(middleware::Logger::default()).route("/ws", web::get().to(index))
+    App::new().wrap(middleware::Logger::default()).route("/$ws", web::get().to(ws))
   })
-  .bind(format!("{}:{}", "0.0.0.0", CONFIG.http_port))
+  .backlog(CONFIG.server.backlog)
+  .keep_alive(CONFIG.server.keep_alive)
+  .max_connection_rate(CONFIG.server.max_connection_rate)
+  .max_connections(CONFIG.server.max_connections)
+  .workers(CONFIG.server.workers)
+  .bind(format!("{}:{}", "0.0.0.0", CONFIG.server.http_port))
   .unwrap()
   .run()
   .await

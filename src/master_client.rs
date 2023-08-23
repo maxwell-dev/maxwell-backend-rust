@@ -16,8 +16,7 @@ pub struct MasterClient {
 
 impl MasterClient {
   pub fn new(endpoints: &Vec<String>) -> Self {
-    let mut options = ConnectionOptions::default();
-    options.max_idle_hops = u32::MAX;
+    let options = ConnectionOptions::default();
     let connection = FutureStyleConnection::start_with_alt_endpoints2(endpoints.clone(), options);
     MasterClient { connection }
   }
@@ -36,7 +35,7 @@ impl MasterClient {
 }
 
 pub static MASTER_CLIENT: Lazy<MasterClient> =
-  Lazy::new(|| MasterClient::new(&CONFIG.master_endpoints));
+  Lazy::new(|| MasterClient::new(&CONFIG.master_client.endpoints));
 
 #[cfg(test)]
 mod tests {

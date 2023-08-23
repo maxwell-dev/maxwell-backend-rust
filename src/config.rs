@@ -1,4 +1,4 @@
-use std::{env::current_dir, path::PathBuf};
+use std::{env::current_dir, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -6,15 +6,42 @@ use serde::de::{Deserialize, Deserializer};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-  pub http_port: u32,
-  pub master_endpoints: Vec<String>,
+  pub server: ServerConfig,
+  pub master_client: MasterClientConfig,
   pub puller: PullerConfig,
   pub db: DbConfig,
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+  pub http_port: u32,
+  pub backlog: u32,
+  #[serde(deserialize_with = "deserialize_keep_alive", default)]
+  pub keep_alive: Option<Duration>,
+  pub max_connection_rate: usize,
+  pub max_connections: usize,
+  pub workers: usize,
+  pub max_frame_size: usize,
+}
+
+fn deserialize_keep_alive<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where D: Deserializer<'de> {
+  let keep_alive: u64 = Deserialize::deserialize(deserializer)?;
+  if keep_alive == 0 {
+    Ok(None)
+  } else {
+    Ok(Some(Duration::from_secs(keep_alive)))
+  }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PullerConfig {
   pub max_offset_dif: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MasterClientConfig {
+  pub endpoints: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -3,4 +3,4 @@
 current_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )";
 cd ${current_dir}
 
-releases/current/maxwell-backend
+nohup releases/current/maxwell-backend >/dev/null 2>&1 &
