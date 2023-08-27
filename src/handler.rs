@@ -84,7 +84,7 @@ impl HandlerInner {
         match self.handle_push_req(req) {
           Ok(()) => maxwell_protocol::PushRep { r#ref }.into_enum(),
           Err(err) => maxwell_protocol::ErrorRep {
-            code: 1,
+            code: ErrorCode::FailedToPush as i32,
             desc: format!("Failed to push: err: {:?}", err),
             r#ref,
           }
@@ -97,7 +97,7 @@ impl HandlerInner {
         match self.handle_pull_req(req) {
           Ok(()) => maxwell_protocol::ProtocolMsg::None,
           Err(err) => maxwell_protocol::ErrorRep {
-            code: 1,
+            code: ErrorCode::FailedToPull as i32,
             desc: format!("Failed to pull: err: {:?}", err),
             r#ref,
           }
@@ -105,7 +105,7 @@ impl HandlerInner {
         }
       }
       other => maxwell_protocol::ErrorRep {
-        code: 1,
+        code: ErrorCode::UnknownMsg as i32,
         desc: format!("Received unknown msg: {:?}", other),
         r#ref: maxwell_protocol::get_ref(&other),
       }
@@ -118,7 +118,7 @@ impl HandlerInner {
     match protocol_msg {
       ProtocolMsg::PullRep(_) => protocol_msg,
       other => maxwell_protocol::ErrorRep {
-        code: 1,
+        code: ErrorCode::UnknownMsg as i32,
         desc: format!("Received unknown msg: {:?}", other),
         r#ref: maxwell_protocol::get_ref(&other),
       }
