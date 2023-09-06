@@ -1,9 +1,6 @@
-use std::{
-  num::NonZeroU32,
-  sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-  },
+use std::sync::{
+  atomic::{AtomicU64, Ordering},
+  Arc,
 };
 
 use actix::Addr;
@@ -59,9 +56,9 @@ impl Pusher {
 #[derive(Clone)]
 pub struct PusherWeighter;
 
-impl Weighter<String, (), Arc<Pusher>> for PusherWeighter {
-  fn weight(&self, _key: &String, _qey: &(), val: &Arc<Pusher>) -> NonZeroU32 {
-    NonZeroU32::new(24 + val.topic.len() as u32).unwrap()
+impl Weighter<String, Arc<Pusher>> for PusherWeighter {
+  fn weight(&self, _key: &String, val: &Arc<Pusher>) -> u32 {
+    24 + val.topic.len() as u32
   }
 }
 
@@ -81,6 +78,6 @@ impl PusherMgr {
   }
 
   pub fn get_pusher(&self, topic: &String) -> Result<Arc<Pusher>> {
-    self.cache.get_or_insert_with(&topic, || Ok(Arc::new(Pusher::new(topic.clone())?)))
+    self.cache.get_or_insert_with(topic, || Ok(Arc::new(Pusher::new(topic.clone())?)))
   }
 }

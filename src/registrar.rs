@@ -32,14 +32,14 @@ impl RegistrarInner {
 
   async fn register(&self) -> bool {
     let req = RegisterBackendReq { http_port: CONFIG.server.http_port, r#ref: 0 }.into_enum();
-    log::info!("Registering: req: {:?}", req);
+    log::info!("Registering backend: req: {:?}", req);
     match MASTER_CLIENT.send(req).await {
       Ok(rep) => {
-        log::info!("Registered successfully: rep: {:?}", rep);
+        log::info!("Successfully to register backend: rep: {:?}", rep);
         true
       }
       Err(err) => {
-        log::warn!("Failed to register: {:?}", err);
+        log::warn!("Failed to register backend: {:?}", err);
         false
       }
     }
