@@ -76,7 +76,7 @@ impl HandlerInner {
   }
 
   async fn handle_external_msg(&self, protocol_msg: ProtocolMsg) -> ProtocolMsg {
-    log::info!("received external msg: {:?}", protocol_msg);
+    log::debug!("received external msg: {:?}", protocol_msg);
     match protocol_msg {
       ProtocolMsg::PingReq(req) => maxwell_protocol::PingRep { r#ref: req.r#ref }.into_enum(),
       ProtocolMsg::PushReq(req) => {
@@ -114,7 +114,7 @@ impl HandlerInner {
   }
 
   async fn handle_internal_msg(&self, protocol_msg: ProtocolMsg) -> ProtocolMsg {
-    log::info!("received internal msg: {:?}", protocol_msg);
+    log::debug!("received internal msg: {:?}", protocol_msg);
     match protocol_msg {
       ProtocolMsg::PullRep(_) => protocol_msg,
       other => maxwell_protocol::ErrorRep {

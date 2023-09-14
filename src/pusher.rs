@@ -3,35 +3,30 @@ use std::sync::{
   Arc,
 };
 
-use actix::Addr;
+use ahash::RandomState as AHasher;
 use anyhow::{Error, Result};
 use bytes::Bytes;
+use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use maxwell_protocol::PushReq;
 use once_cell::sync::OnceCell;
-use quick_cache::{sync::Cache, Weighter};
 use seriesdb::{
   prelude::{Coder, Db, Table},
   table::TtlTable,
 };
 
-use crate::{
-  db::MsgCoder,
-  puller::{NotifyMsg, Puller},
-};
+use crate::{db::MsgCoder, puller::NotifyMsg};
 use crate::{db::DB, puller::PullerMgr};
 
 pub struct Pusher {
-  topic: String,
+  _topic: String,
   next_offset: AtomicU64,
   table: Arc<TtlTable>,
-  puller: Addr<Puller>,
 }
 
 impl Pusher {
   pub fn new(topic: String) -> Result<Self> {
-    let puller = PullerMgr::singleton().get_puller(&topic)?;
     let table = DB.open_table(&topic)?;
-    Ok(Pusher { topic, next_offset: AtomicU64::new(Self::init_next_offset(&table)), table, puller })
+    Ok(Pusher { _topic: topic, next_offset: AtomicU64::new(Self::init_next_offset(&table)), table })
   }
 
   pub fn push(&self, req: PushReq) -> Result<(), Error> {
@@ -39,7 +34,8 @@ impl Pusher {
     let offset_bytes = <MsgCoder as Coder<u64, Bytes>>::encode_key(offset);
     let value_bytes = Bytes::from(req.value);
     let timestamp = self.table.put_timestamped(offset_bytes, value_bytes.clone())?;
-    self.puller.do_send(NotifyMsg { topic: req.topic, offset, value: value_bytes, timestamp });
+    let puller = PullerMgr::singleton().get_puller(&req.topic)?;
+    puller.do_send(NotifyMsg { topic: req.topic, offset, value: value_bytes, timestamp });
     Ok(())
   }
 
@@ -53,24 +49,15 @@ impl Pusher {
   }
 }
 
-#[derive(Clone)]
-pub struct PusherWeighter;
-
-impl Weighter<String, Arc<Pusher>> for PusherWeighter {
-  fn weight(&self, _key: &String, val: &Arc<Pusher>) -> u32 {
-    24 + val.topic.len() as u32
-  }
-}
-
 pub struct PusherMgr {
-  cache: Cache<String, Arc<Pusher>, PusherWeighter>,
+  pushers: DashMap<String, Arc<Pusher>, AHasher>,
 }
 
 static PUSHER_MGR: OnceCell<PusherMgr> = OnceCell::new();
 
 impl PusherMgr {
   fn new() -> Self {
-    PusherMgr { cache: Cache::with_weighter(10000, 10000 as u64 * 64, PusherWeighter) }
+    PusherMgr { pushers: DashMap::with_capacity_and_hasher(10000, AHasher::default()) }
   }
 
   pub fn singleton() -> &'static Self {
@@ -78,6 +65,16 @@ impl PusherMgr {
   }
 
   pub fn get_pusher(&self, topic: &String) -> Result<Arc<Pusher>> {
-    self.cache.get_or_insert_with(topic, || Ok(Arc::new(Pusher::new(topic.clone())?)))
+    match self.pushers.entry(topic.clone()) {
+      DashEntry::Occupied(occupied) => {
+        let pusher = occupied.get();
+        Ok(Arc::clone(pusher))
+      }
+      DashEntry::Vacant(vacant) => {
+        let pusher = Arc::new(Pusher::new(topic.clone())?);
+        vacant.insert(Arc::clone(&pusher));
+        Ok(pusher)
+      }
+    }
   }
 }

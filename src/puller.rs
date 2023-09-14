@@ -162,7 +162,7 @@ impl Puller {
     let mut values = Vec::<Msg>::new();
     let mut count = 0;
     let mut cursor = self.table.new_cursor();
-    cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(self.last_offset));
+    cursor.seek_to_last();
     while cursor.is_valid() {
       if count >= limit {
         break;
@@ -203,7 +203,7 @@ impl Puller {
     for i in 0..len {
       if let Some(pull_msg) = { self.pending_pull_msgs.get_index(i) } {
         let pull_req: &PullReq = &pull_msg.0;
-        if notify_msg.offset == pull_req.offset as u64 {
+        if notify_msg.offset <= pull_req.offset as u64 {
           Self::notify_one(
             pull_req,
             vec![Msg {
@@ -241,8 +241,10 @@ impl Puller {
   fn adjust_offset(&self, offset: u64) -> u64 {
     if offset as u64 + CONFIG.puller.max_offset_dif < self.last_offset {
       self.last_offset - CONFIG.puller.max_offset_dif
+    } else if offset > self.last_offset {
+      offset + 1
     } else {
-      offset as u64
+      offset
     }
   }
 
@@ -267,9 +269,7 @@ impl Puller {
 
   #[inline]
   fn update_last_offset(&mut self, last_offset: u64) {
-    if self.last_offset < last_offset {
-      self.last_offset = last_offset;
-    }
+    self.last_offset = last_offset;
   }
 }
 
@@ -281,7 +281,7 @@ static PULLER_MGR: OnceCell<PullerMgr> = OnceCell::new();
 
 impl PullerMgr {
   fn new() -> Self {
-    PullerMgr { pullers: DashMap::with_capacity_and_hasher(1000, AHasher::default()) }
+    PullerMgr { pullers: DashMap::with_capacity_and_hasher(10000, AHasher::default()) }
   }
 
   pub fn singleton() -> &'static Self {

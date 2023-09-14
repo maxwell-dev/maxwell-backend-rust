@@ -15,6 +15,7 @@ max_offset_dif = 1000
 
 [db]
 path = "data"
+ttl = 300
 
 [db.seriesdb]
 level_zero_file_num_compaction_trigger = 4

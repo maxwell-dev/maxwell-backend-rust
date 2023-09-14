@@ -48,6 +48,7 @@ pub struct MasterClientConfig {
 pub struct DbConfig {
   #[serde(deserialize_with = "deserialize_path")]
   pub path: String,
+  pub ttl: u32,
   pub seriesdb: SeriesdbConfig,
 }
 

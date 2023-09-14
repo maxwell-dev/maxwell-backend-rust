@@ -10,7 +10,7 @@ use crate::config::*;
 
 pub(crate) fn open_db(db_config: &DbConfig) -> Result<TtlDb> {
   Ok(
-    TtlDb::open(&db_config.path, 120, &mut build_options(&db_config.seriesdb))
+    TtlDb::open(&db_config.path, db_config.ttl, &mut build_options(&db_config.seriesdb))
       .with_context(|| format!("Failed to open db from: {:?}", db_config.path))?,
   )
 }
