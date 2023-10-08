@@ -19,6 +19,7 @@ use crate::{
 
 static ID_SEED: AtomicU32 = AtomicU32::new(1);
 
+#[inline]
 fn next_id() -> u32 {
   ID_SEED.fetch_add(1, Ordering::Relaxed)
 }
@@ -29,22 +30,27 @@ static ID_ADDRESS_MAP: OnceCell<IdAddressMap> = OnceCell::new();
 pub struct IdAddressMap(DashMap<u32, Recipient<ProtocolMsg>, AHasher>);
 
 impl IdAddressMap {
+  #[inline]
   pub fn new() -> Self {
     IdAddressMap(DashMap::with_capacity_and_hasher(1024, AHasher::default()))
   }
 
+  #[inline]
   pub fn singleton() -> &'static Self {
     ID_ADDRESS_MAP.get_or_init(|| Self::new())
   }
 
+  #[inline]
   pub fn add(&self, id: u32, address: Recipient<ProtocolMsg>) {
     self.0.insert(id, address);
   }
 
+  #[inline]
   pub fn remove(&self, id: u32) {
     self.0.remove(&id);
   }
 
+  #[inline]
   pub fn get(&self, id: u32) -> Option<Recipient<ProtocolMsg>> {
     if let Some(address) = self.0.get(&id) {
       Some(address.clone())
@@ -126,14 +132,16 @@ impl HandlerInner {
     }
   }
 
+  #[inline]
   fn handle_push_req(&self, req: PushReq) -> Result<()> {
-    let pusher = PusherMgr::singleton().get_pusher(&req.topic)?;
+    let pusher = PusherMgr::singleton().get_or_new_pusher(&req.topic)?;
     pusher.push(req)?;
     Ok(())
   }
 
+  #[inline]
   fn handle_pull_req(&self, req: PullReq) -> Result<()> {
-    let puller = PullerMgr::singleton().get_puller(&req.topic)?;
+    let puller = PullerMgr::singleton().get_or_new_puller(&req.topic)?;
     puller.try_send(PullMsg(req))?;
     Ok(())
   }

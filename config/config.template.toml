@@ -10,8 +10,15 @@ workers = 8
 [master_client]
 endpoints = ["localhost:8081"]
 
+[pusher]
+pusher_mgr_capacity = 100000
+
 [puller]
+check_interval = 60
+idle_timeout = 300
 max_offset_dif = 1000
+max_seconds_elapsed = 300
+puller_mgr_capacity = 100000
 
 [db]
 path = "data"

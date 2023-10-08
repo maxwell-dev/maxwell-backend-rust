@@ -1,6 +1,7 @@
 use std::{
   hash::{Hash, Hasher},
   sync::Arc,
+  time::Duration,
 };
 
 use actix::{prelude::*, Actor, Addr, Message as ActixMessage};
@@ -26,13 +27,20 @@ pub struct Puller {
   table: Arc<TtlTable>,
   last_offset: u64,
   pending_pull_msgs: IndexSet<PullMsg, AHasher>,
+  active_at: u32,
 }
 
 impl Actor for Puller {
   type Context = Context<Self>;
 
-  fn started(&mut self, _ctx: &mut Self::Context) {
+  fn started(&mut self, ctx: &mut Self::Context) {
     log::debug!("Puller actor started: topic: {:?}", self.topic);
+    ctx.run_interval(Duration::from_secs(CONFIG.puller.check_interval as u64), |act, ctx| {
+      if act.active_at + CONFIG.puller.idle_timeout < Self::now() {
+        log::info!("Idle timeout, stopping the puller actor: topic: {:?}", act.topic);
+        ctx.stop();
+      }
+    });
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {
@@ -42,6 +50,7 @@ impl Actor for Puller {
 
   fn stopped(&mut self, _: &mut Self::Context) {
     log::debug!("Puller actor stopped: topic: {:?}", self.topic);
+    PullerMgr::singleton().remove(&self.topic);
   }
 }
 
@@ -50,6 +59,7 @@ impl Actor for Puller {
 pub struct PullMsg(pub PullReq);
 
 impl PartialEq for PullMsg {
+  #[inline]
   fn eq(&self, other: &Self) -> bool {
     self.0.topic == other.0.topic
       && self.0.conn0_ref == other.0.conn0_ref
@@ -59,6 +69,7 @@ impl PartialEq for PullMsg {
 impl Eq for PullMsg {}
 
 impl Hash for PullMsg {
+  #[inline]
   fn hash<H: Hasher>(&self, state: &mut H) {
     self.0.topic.hash(state);
     self.0.conn0_ref.hash(state);
@@ -72,7 +83,12 @@ impl Handler<PullMsg> for Puller {
   #[inline]
   fn handle(&mut self, pull_msg: PullMsg, _ctx: &mut Context<Self>) -> Self::Result {
     log::debug!("pull_msg: {:?}", pull_msg);
-    self.pull(pull_msg)
+    self.active_at = Self::now();
+    if pull_msg.0.offset >= 0 {
+      self.pull_since_offset(pull_msg);
+    } else {
+      self.pull_since_time(pull_msg);
+    }
   }
 }
 
@@ -91,7 +107,7 @@ impl Handler<NotifyMsg> for Puller {
   #[inline]
   fn handle(&mut self, notify_msg: NotifyMsg, _ctx: &mut Context<Self>) -> Self::Result {
     log::debug!("notify_msg: {:?}", notify_msg);
-    self.notify_all(notify_msg)
+    self.notify(notify_msg)
   }
 }
 
@@ -100,7 +116,13 @@ impl Puller {
   pub fn new(topic: String) -> Result<Self> {
     let table = DB.open_table(&topic)?;
     let last_offset = Self::recover_last_offset(&table);
-    Ok(Self { topic, table, last_offset, pending_pull_msgs: IndexSet::with_hasher(AHasher::new()) })
+    Ok(Self {
+      topic,
+      table,
+      last_offset,
+      pending_pull_msgs: IndexSet::with_hasher(AHasher::new()),
+      active_at: Self::now(),
+    })
   }
 
   #[inline]
@@ -109,39 +131,43 @@ impl Puller {
     Ok(Puller::start_in_arbiter(&ArbiterPool::singleton().fetch_arbiter(), move |_ctx| puller))
   }
 
-  fn pull(&mut self, mut pull_msg: PullMsg) {
+  fn pull_since_offset(&mut self, mut pull_msg: PullMsg) {
     let pull_req = &mut pull_msg.0;
-    if pull_req.offset >= 0 {
-      let adjusted_offset = self.adjust_offset(pull_req.offset as u64);
-      if adjusted_offset > self.last_offset {
-        pull_req.offset = adjusted_offset as i64;
-        self.add_to_pendings(pull_msg);
-      } else {
-        let msgs = self.get_since_by_offset(adjusted_offset, pull_req.limit);
-        if msgs.len() > 0 {
-          Self::notify_one(&pull_req, msgs);
-          self.remove_from_pendings(&pull_msg);
-        } else {
-          pull_req.offset = adjusted_offset as i64;
-          self.add_to_pendings(pull_msg);
-        }
-      }
+    let adjusted_offset = self.adjust_offset(pull_req.offset as u64);
+    if adjusted_offset > self.last_offset {
+      pull_req.offset = adjusted_offset as i64;
+      self.add_to_pendings(pull_msg);
     } else {
-      let seconds_elapsed = Self::adjust_seconds_elapsed(pull_req.offset.abs() as u64);
-      let msgs = self.get_until_by_time(seconds_elapsed, pull_req.limit);
+      let msgs = self.get_since_offset(adjusted_offset, pull_req.limit);
       if msgs.len() > 0 {
-        Self::notify_one(&pull_req, msgs);
+        Self::do_notify(&pull_req, msgs);
         self.remove_from_pendings(&pull_msg);
       } else {
-        pull_req.offset = (self.last_offset + 1) as i64;
+        /* All msgs have been expired */
+        pull_req.offset = adjusted_offset as i64;
         self.add_to_pendings(pull_msg);
       }
     }
   }
 
-  fn get_since_by_offset(&self, offset: u64, limit: u32) -> Vec<Msg> {
+  fn pull_since_time(&mut self, mut pull_msg: PullMsg) {
+    let pull_req = &mut pull_msg.0;
+    let seconds_elapsed = Self::adjust_seconds_elapsed(pull_req.offset.abs() as u32);
+    let msgs = self.get_since_time(seconds_elapsed, pull_req.limit);
+    if msgs.len() > 0 {
+      Self::do_notify(&pull_req, msgs);
+      self.remove_from_pendings(&pull_msg);
+    } else {
+      /* All msgs have been expired */
+      pull_req.offset = (self.last_offset + 1) as i64;
+      self.add_to_pendings(pull_msg);
+    }
+  }
+
+  fn get_since_offset(&self, offset: u64, limit: u32) -> Vec<Msg> {
     let mut values = Vec::<Msg>::new();
     let mut count = 0;
+    let now = Self::now();
     let mut cursor = self.table.new_cursor();
     cursor.seek(<MsgCoder as Coder<u64, Bytes>>::encode_key(offset));
     while cursor.is_valid() {
@@ -150,6 +176,9 @@ impl Puller {
       }
       let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
+      if (timestamp + CONFIG.db.ttl as u32) < now {
+        continue;
+      }
       let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
       values.push(Msg { offset: curr_offset, value: value.into(), timestamp: timestamp as u64 });
       cursor.next();
@@ -158,9 +187,10 @@ impl Puller {
     values
   }
 
-  fn get_until_by_time(&self, seconds_elapsed: u16, limit: u32) -> Vec<Msg> {
+  fn get_since_time(&self, seconds_elapsed: u32, limit: u32) -> Vec<Msg> {
     let mut values = Vec::<Msg>::new();
     let mut count = 0;
+    let now = Self::now();
     let mut cursor = self.table.new_cursor();
     cursor.seek_to_last();
     while cursor.is_valid() {
@@ -169,7 +199,10 @@ impl Puller {
       }
       let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
-      if (timestamp + seconds_elapsed as u32) < (Utc::now().timestamp() as u32) {
+      if (timestamp + CONFIG.db.ttl as u32) < now {
+        break;
+      }
+      if (timestamp + seconds_elapsed as u32) < now {
         break;
       }
       let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
@@ -181,7 +214,45 @@ impl Puller {
     values
   }
 
-  fn notify_one(pull_req: &PullReq, msgs: Vec<Msg>) {
+  fn notify(&mut self, notify_msg: NotifyMsg) {
+    self.update_last_offset(notify_msg.offset);
+
+    let mut notified_pull_reqs: Vec<usize> = vec![];
+    let len = self.pending_pull_msgs.len();
+    for i in 0..len {
+      if let Some(pull_msg) = { self.pending_pull_msgs.get_index(i) } {
+        let pull_req: &PullReq = &pull_msg.0;
+        if notify_msg.offset <= pull_req.offset as u64 {
+          /*
+           * < means rewinded, since the backend was restarted after the db was deleted.
+           * = means the pull_req.offset just equals with notify_msg.offset.
+           */
+          Self::do_notify(
+            pull_req,
+            vec![Msg {
+              offset: notify_msg.offset,
+              value: notify_msg.value.clone().into(),
+              timestamp: notify_msg.timestamp as u64,
+            }],
+          );
+          notified_pull_reqs.push(i);
+        } else {
+          let msgs = self.get_since_offset(pull_req.offset as u64, pull_req.limit);
+          if msgs.len() > 0 {
+            Self::do_notify(pull_req, msgs);
+            notified_pull_reqs.push(i);
+          } else {
+            /* Do nothing, since all msgs have been expired */
+          }
+        }
+      }
+    }
+    for i in notified_pull_reqs {
+      self.pending_pull_msgs.swap_remove_index(i);
+    }
+  }
+
+  fn do_notify(pull_req: &PullReq, msgs: Vec<Msg>) {
     if let Some(addr) = IdAddressMap::singleton().get(pull_req.conn1_ref) {
       addr.do_send(
         PullRep {
@@ -192,38 +263,8 @@ impl Puller {
         }
         .into_enum(),
       )
-    }
-  }
-
-  fn notify_all(&mut self, notify_msg: NotifyMsg) {
-    self.update_last_offset(notify_msg.offset);
-
-    let mut notified_pull_reqs: Vec<usize> = vec![];
-    let len = self.pending_pull_msgs.len();
-    for i in 0..len {
-      if let Some(pull_msg) = { self.pending_pull_msgs.get_index(i) } {
-        let pull_req: &PullReq = &pull_msg.0;
-        if notify_msg.offset <= pull_req.offset as u64 {
-          Self::notify_one(
-            pull_req,
-            vec![Msg {
-              offset: notify_msg.offset,
-              value: notify_msg.value.clone().into(),
-              timestamp: notify_msg.timestamp as u64,
-            }],
-          );
-          notified_pull_reqs.push(i);
-        } else {
-          let msgs = self.get_since_by_offset(pull_req.offset as u64, pull_req.limit);
-          if msgs.len() > 0 {
-            Self::notify_one(pull_req, msgs);
-            notified_pull_reqs.push(i);
-          }
-        }
-      }
-    }
-    for i in notified_pull_reqs {
-      self.pending_pull_msgs.swap_remove_index(i);
+    } else {
+      log::info!("The connection: {} of the communication channel was lost.", pull_req.conn1_ref);
     }
   }
 
@@ -241,19 +282,20 @@ impl Puller {
   fn adjust_offset(&self, offset: u64) -> u64 {
     if offset as u64 + CONFIG.puller.max_offset_dif < self.last_offset {
       self.last_offset - CONFIG.puller.max_offset_dif
-    } else if offset > self.last_offset {
-      offset + 1
+    } else if offset > self.last_offset + 1 {
+      // Rewinded, since the backend was restarted after the db was deleted
+      self.last_offset + 1
     } else {
       offset
     }
   }
 
   #[inline]
-  fn adjust_seconds_elapsed(seconds_elapsed: u64) -> u16 {
-    if seconds_elapsed > 300 {
-      300
+  fn adjust_seconds_elapsed(seconds_elapsed: u32) -> u32 {
+    if seconds_elapsed > CONFIG.puller.max_seconds_elapsed {
+      CONFIG.puller.max_seconds_elapsed
     } else {
-      seconds_elapsed as u16
+      seconds_elapsed
     }
   }
 
@@ -269,7 +311,20 @@ impl Puller {
 
   #[inline]
   fn update_last_offset(&mut self, last_offset: u64) {
-    self.last_offset = last_offset;
+    if last_offset > self.last_offset {
+      self.last_offset = last_offset;
+    } else {
+      log::error!(
+        "last_offset: {} is less than self.last_offset: {}",
+        last_offset,
+        self.last_offset
+      );
+    }
+  }
+
+  #[inline]
+  fn now() -> u32 {
+    Utc::now().timestamp() as u32
   }
 }
 
@@ -280,15 +335,36 @@ pub struct PullerMgr {
 static PULLER_MGR: OnceCell<PullerMgr> = OnceCell::new();
 
 impl PullerMgr {
+  #[inline]
   fn new() -> Self {
-    PullerMgr { pullers: DashMap::with_capacity_and_hasher(10000, AHasher::default()) }
+    PullerMgr {
+      pullers: DashMap::with_capacity_and_hasher(
+        CONFIG.puller.puller_mgr_capacity as usize,
+        AHasher::default(),
+      ),
+    }
   }
 
+  #[inline]
   pub fn singleton() -> &'static Self {
     PULLER_MGR.get_or_init(|| PullerMgr::new())
   }
 
-  pub fn get_puller(&self, topic: &String) -> Result<Addr<Puller>> {
+  #[inline]
+  pub fn get_puller(&self, topic: &String) -> Option<Addr<Puller>> {
+    if let Some(puller) = self.pullers.get(topic) {
+      if puller.connected() {
+        Some(puller.clone())
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  }
+
+  #[inline]
+  pub fn get_or_new_puller(&self, topic: &String) -> Result<Addr<Puller>> {
     match self.pullers.entry(topic.clone()) {
       DashEntry::Occupied(mut occupied) => {
         let puller = occupied.get();
@@ -306,6 +382,11 @@ impl PullerMgr {
         Ok(puller)
       }
     }
+  }
+
+  #[inline]
+  pub fn remove(&self, topic: &String) {
+    self.pullers.remove(topic);
   }
 }
 

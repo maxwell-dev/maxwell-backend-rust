@@ -8,6 +8,7 @@ use serde::de::{Deserialize, Deserializer};
 pub struct Config {
   pub server: ServerConfig,
   pub master_client: MasterClientConfig,
+  pub pusher: PusherConfig,
   pub puller: PullerConfig,
   pub db: DbConfig,
 }
@@ -35,8 +36,17 @@ where D: Deserializer<'de> {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PusherConfig {
+  pub pusher_mgr_capacity: u32,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PullerConfig {
+  pub check_interval: u32,
+  pub idle_timeout: u32,
   pub max_offset_dif: u64,
+  pub max_seconds_elapsed: u32,
+  pub puller_mgr_capacity: u32,
 }
 
 #[derive(Debug, Deserialize)]
