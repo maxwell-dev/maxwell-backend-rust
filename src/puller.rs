@@ -1,7 +1,6 @@
 use std::{
   hash::{Hash, Hasher},
   sync::Arc,
-  time::Duration,
 };
 
 use actix::{prelude::*, Actor, Addr, Message as ActixMessage};
@@ -33,14 +32,14 @@ pub struct Puller {
 impl Actor for Puller {
   type Context = Context<Self>;
 
-  fn started(&mut self, ctx: &mut Self::Context) {
+  fn started(&mut self, _ctx: &mut Self::Context) {
     log::debug!("Puller actor started: topic: {:?}", self.topic);
-    ctx.run_interval(Duration::from_secs(CONFIG.puller.check_interval as u64), |act, ctx| {
-      if act.active_at + CONFIG.puller.idle_timeout < Self::now() {
-        log::info!("Idle timeout, stopping the puller actor: topic: {:?}", act.topic);
-        ctx.stop();
-      }
-    });
+    // ctx.run_interval(Duration::from_secs(CONFIG.puller.check_interval as u64), |act, ctx| {
+    //   if act.active_at + CONFIG.puller.idle_timeout < Self::now() {
+    //     log::info!("Idle timeout, stopping the puller actor: topic: {:?}", act.topic);
+    //     ctx.stop();
+    //   }
+    // });
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {

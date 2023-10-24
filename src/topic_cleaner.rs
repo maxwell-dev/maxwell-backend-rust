@@ -32,8 +32,8 @@ impl TopicCleanerInner {
             );
             self.checksum.store(rep.checksum, Ordering::SeqCst);
             TOPIC_CHECKER.clear();
-            PusherMgr::singleton().clear();
             PullerMgr::singleton().clear();
+            PusherMgr::singleton().clear();
           }
         }
         _ => {
