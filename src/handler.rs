@@ -90,12 +90,16 @@ impl HandlerInner {
         let r#ref = req.r#ref;
         match self.handle_push_req(req).await {
           Ok(rep) => rep,
-          Err(err) => maxwell_protocol::ErrorRep {
-            code: ErrorCode::FailedToPush as i32,
-            desc: format!("Failed to push: err: {:?}", err),
-            r#ref,
+          Err(err) => {
+            log::error!("Failed to push: err: {:?}", err);
+
+            maxwell_protocol::ErrorRep {
+              code: ErrorCode::FailedToPush as i32,
+              desc: format!("Failed to push: err: {:?}", err),
+              r#ref,
+            }
+            .into_enum()
           }
-          .into_enum(),
         }
       }
       ProtocolMsg::PullReq(mut req) => {
@@ -103,20 +107,28 @@ impl HandlerInner {
         req.conn1_ref = self.id;
         match self.handle_pull_req(req).await {
           Ok(rep) => rep,
-          Err(err) => maxwell_protocol::ErrorRep {
-            code: ErrorCode::FailedToPull as i32,
-            desc: format!("Failed to pull: err: {:?}", err),
-            r#ref,
+          Err(err) => {
+            log::error!("Failed to pull: err: {:?}", err);
+
+            maxwell_protocol::ErrorRep {
+              code: ErrorCode::FailedToPull as i32,
+              desc: format!("Failed to pull: err: {:?}", err),
+              r#ref,
+            }
+            .into_enum()
           }
-          .into_enum(),
         }
       }
-      other => maxwell_protocol::ErrorRep {
-        code: ErrorCode::UnknownMsg as i32,
-        desc: format!("Received unknown msg: {:?}", other),
-        r#ref: maxwell_protocol::get_ref(&other),
+      other => {
+        log::error!("Received unknown msg: {:?}", other);
+
+        maxwell_protocol::ErrorRep {
+          code: ErrorCode::UnknownMsg as i32,
+          desc: format!("Received unknown msg: {:?}", other),
+          r#ref: maxwell_protocol::get_ref(&other),
+        }
+        .into_enum()
       }
-      .into_enum(),
     }
   }
 

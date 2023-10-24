@@ -27,7 +27,6 @@ async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Erro
 
 #[actix_web::main]
 async fn main() {
-  console_subscriber::init();
   log4rs::init_file("config/log4rs.yaml", Default::default()).unwrap();
 
   Registrar::new().start();
