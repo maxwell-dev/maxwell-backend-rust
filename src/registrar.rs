@@ -33,10 +33,16 @@ impl RegistrarInner {
     let req = RegisterBackendReq { http_port: CONFIG.server.http_port, r#ref: 0 }.into_enum();
     log::info!("Registering backend: req: {:?}", req);
     match MASTER_CLIENT.send(req).await {
-      Ok(rep) => {
-        log::info!("Successfully to register backend: rep: {:?}", rep);
-        true
-      }
+      Ok(rep) => match rep {
+        ProtocolMsg::RegisterBackendRep(rep) => {
+          log::info!("Successfully to register backend: rep: {:?}", rep);
+          true
+        }
+        other => {
+          log::warn!("Failed to register backend: {:?}", other);
+          false
+        }
+      },
       Err(err) => {
         log::warn!("Failed to register backend: {:?}", err);
         false
