@@ -10,6 +10,7 @@ pub struct Config {
   pub master_client: MasterClientConfig,
   pub pusher: PusherConfig,
   pub puller: PullerConfig,
+  pub topic_checker: TopicCheckerConfig,
   pub db: DbConfig,
 }
 
@@ -36,6 +37,11 @@ where D: Deserializer<'de> {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MasterClientConfig {
+  pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PusherConfig {
   pub pusher_mgr_capacity: u32,
 }
@@ -50,8 +56,8 @@ pub struct PullerConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct MasterClientConfig {
-  pub endpoints: Vec<String>,
+pub struct TopicCheckerConfig {
+  pub cache_size: u32,
 }
 
 #[derive(Debug, Deserialize)]

@@ -8,13 +8,14 @@ mod master_client;
 mod puller;
 mod pusher;
 mod registrar;
+mod topic_checker;
+mod topic_cleaner;
 
 use actix::prelude::*;
 use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 
-use crate::config::CONFIG;
-use crate::{handler::Handler, registrar::Registrar};
+use crate::{config::CONFIG, handler::Handler, registrar::Registrar, topic_cleaner::TopicCleaner};
 
 async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
   let resp = ws::WsResponseBuilder::new(Handler::new(), &req, stream)
@@ -26,10 +27,11 @@ async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Erro
 
 #[actix_web::main]
 async fn main() {
+  console_subscriber::init();
   log4rs::init_file("config/log4rs.yaml", Default::default()).unwrap();
 
-  let registrar = Registrar::new();
-  registrar.start();
+  Registrar::new().start();
+  TopicCleaner::new().start();
 
   HttpServer::new(move || {
     App::new().wrap(middleware::Logger::default()).route("/$ws", web::get().to(ws))

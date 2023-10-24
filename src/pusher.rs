@@ -14,8 +14,7 @@ use seriesdb::{
   table::TtlTable,
 };
 
-use crate::{config::CONFIG, db::MsgCoder, puller::NotifyMsg};
-use crate::{db::DB, puller::PullerMgr};
+use crate::{config::CONFIG, db::MsgCoder, db::DB, puller::NotifyMsg, puller::PullerMgr};
 
 pub struct Pusher {
   _topic: String,
@@ -76,6 +75,15 @@ impl PusherMgr {
   }
 
   #[inline]
+  pub fn get_pusher(&self, topic: &String) -> Option<Arc<Pusher>> {
+    if let Some(puller) = self.pushers.get(topic) {
+      Some(puller.clone())
+    } else {
+      None
+    }
+  }
+
+  #[inline]
   pub fn get_or_new_pusher(&self, topic: &String) -> Result<Arc<Pusher>> {
     match self.pushers.entry(topic.clone()) {
       DashEntry::Occupied(occupied) => {
@@ -88,5 +96,10 @@ impl PusherMgr {
         Ok(pusher)
       }
     }
+  }
+
+  #[inline]
+  pub fn clear(&self) {
+    self.pushers.clear();
   }
 }

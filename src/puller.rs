@@ -16,10 +16,10 @@ use maxwell_utils::prelude::ArbiterPool;
 use once_cell::sync::OnceCell;
 use seriesdb::prelude::{Coder, Cursor, Db, Table, TtlTable};
 
-use crate::handler::IdAddressMap;
 use crate::{
   config::CONFIG,
   db::{MsgCoder, DB},
+  handler::IdAddressMap,
 };
 
 pub struct Puller {
@@ -107,6 +107,7 @@ impl Handler<NotifyMsg> for Puller {
   #[inline]
   fn handle(&mut self, notify_msg: NotifyMsg, _ctx: &mut Context<Self>) -> Self::Result {
     log::debug!("notify_msg: {:?}", notify_msg);
+    self.update_last_offset(notify_msg.offset);
     self.notify(notify_msg)
   }
 }
@@ -174,12 +175,13 @@ impl Puller {
       if count >= limit {
         break;
       }
-      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
       if (timestamp + CONFIG.db.ttl as u32) < now {
+        cursor.next();
         continue;
       }
       let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
+      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       values.push(Msg { offset: curr_offset, value: value.into(), timestamp: timestamp as u64 });
       cursor.next();
       count += 1;
@@ -197,7 +199,6 @@ impl Puller {
       if count >= limit {
         break;
       }
-      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       let (timestamp, encoded_value) = cursor.timestamped_value().unwrap();
       if (timestamp + CONFIG.db.ttl as u32) < now {
         break;
@@ -206,6 +207,7 @@ impl Puller {
         break;
       }
       let value = <MsgCoder as Coder<u64, Bytes>>::decode_value(encoded_value);
+      let curr_offset = <MsgCoder as Coder<u64, Bytes>>::decode_key(cursor.key().unwrap());
       values.push(Msg { offset: curr_offset, value: value.into(), timestamp: timestamp as u64 });
       cursor.prev();
       count += 1;
@@ -215,8 +217,6 @@ impl Puller {
   }
 
   fn notify(&mut self, notify_msg: NotifyMsg) {
-    self.update_last_offset(notify_msg.offset);
-
     let mut notified_pull_reqs: Vec<usize> = vec![];
     let len = self.pending_pull_msgs.len();
     for i in 0..len {
@@ -264,7 +264,10 @@ impl Puller {
         .into_enum(),
       )
     } else {
-      log::info!("The connection: {} of the communication channel was lost.", pull_req.conn1_ref);
+      log::info!(
+        "The connection<{}> of the frontend<-->backend channel was lost.",
+        pull_req.conn1_ref
+      );
     }
   }
 
@@ -282,11 +285,13 @@ impl Puller {
   fn adjust_offset(&self, offset: u64) -> u64 {
     if offset as u64 + CONFIG.puller.max_offset_dif < self.last_offset {
       self.last_offset - CONFIG.puller.max_offset_dif
-    } else if offset > self.last_offset + 1 {
-      // Rewinded, since the backend was restarted after the db was deleted
-      self.last_offset + 1
     } else {
-      offset
+      if offset > self.last_offset + 1 {
+        // Rewinded, since the backend was restarted after the db was deleted
+        self.last_offset
+      } else {
+        offset
+      }
     }
   }
 
@@ -315,7 +320,7 @@ impl Puller {
       self.last_offset = last_offset;
     } else {
       log::error!(
-        "last_offset: {} is less than self.last_offset: {}",
+        "last_offset: {} must be greater than self.last_offset: {}",
         last_offset,
         self.last_offset
       );
@@ -353,11 +358,7 @@ impl PullerMgr {
   #[inline]
   pub fn get_puller(&self, topic: &String) -> Option<Addr<Puller>> {
     if let Some(puller) = self.pullers.get(topic) {
-      if puller.connected() {
-        Some(puller.clone())
-      } else {
-        None
-      }
+      Some(puller.clone())
     } else {
       None
     }
@@ -387,6 +388,11 @@ impl PullerMgr {
   #[inline]
   pub fn remove(&self, topic: &String) {
     self.pullers.remove(topic);
+  }
+
+  #[inline]
+  pub fn clear(&self) {
+    self.pullers.clear();
   }
 }
 

@@ -6,8 +6,7 @@ use maxwell_protocol::{self, *};
 use maxwell_utils::prelude::*;
 use tokio::time::{sleep, Duration};
 
-use crate::config::CONFIG;
-use crate::master_client::MASTER_CLIENT;
+use crate::{config::CONFIG, master_client::MASTER_CLIENT};
 
 struct RegistrarInner {
   connected_event: LocalManualResetEvent,

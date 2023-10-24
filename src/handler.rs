@@ -15,6 +15,7 @@ use once_cell::sync::OnceCell;
 use crate::{
   puller::{PullMsg, PullerMgr},
   pusher::PusherMgr,
+  topic_checker::TOPIC_CHECKER,
 };
 
 static ID_SEED: AtomicU32 = AtomicU32::new(1);
@@ -87,8 +88,8 @@ impl HandlerInner {
       ProtocolMsg::PingReq(req) => maxwell_protocol::PingRep { r#ref: req.r#ref }.into_enum(),
       ProtocolMsg::PushReq(req) => {
         let r#ref = req.r#ref;
-        match self.handle_push_req(req) {
-          Ok(()) => maxwell_protocol::PushRep { r#ref }.into_enum(),
+        match self.handle_push_req(req).await {
+          Ok(rep) => rep,
           Err(err) => maxwell_protocol::ErrorRep {
             code: ErrorCode::FailedToPush as i32,
             desc: format!("Failed to push: err: {:?}", err),
@@ -100,8 +101,8 @@ impl HandlerInner {
       ProtocolMsg::PullReq(mut req) => {
         let r#ref = req.r#ref;
         req.conn1_ref = self.id;
-        match self.handle_pull_req(req) {
-          Ok(()) => maxwell_protocol::ProtocolMsg::None,
+        match self.handle_pull_req(req).await {
+          Ok(rep) => rep,
           Err(err) => maxwell_protocol::ErrorRep {
             code: ErrorCode::FailedToPull as i32,
             desc: format!("Failed to pull: err: {:?}", err),
@@ -133,17 +134,51 @@ impl HandlerInner {
   }
 
   #[inline]
-  fn handle_push_req(&self, req: PushReq) -> Result<()> {
-    let pusher = PusherMgr::singleton().get_or_new_pusher(&req.topic)?;
-    pusher.push(req)?;
-    Ok(())
+  async fn handle_push_req(&self, req: PushReq) -> Result<ProtocolMsg> {
+    let r#ref = req.r#ref;
+    if let Some(pusher) = PusherMgr::singleton().get_pusher(&req.topic) {
+      pusher.push(req)?;
+      Ok(maxwell_protocol::PushRep { r#ref }.into_enum())
+    } else {
+      if TOPIC_CHECKER.check(&req.topic).await? {
+        let pusher = PusherMgr::singleton().get_or_new_pusher(&req.topic)?;
+        pusher.push(req)?;
+        Ok(maxwell_protocol::PushRep { r#ref }.into_enum())
+      } else {
+        Ok(
+          maxwell_protocol::ErrorRep {
+            code: ErrorCode::UnknownTopic as i32,
+            desc: format!("Unknown topic: {:?}", req.topic),
+            r#ref,
+          }
+          .into_enum(),
+        )
+      }
+    }
   }
 
   #[inline]
-  fn handle_pull_req(&self, req: PullReq) -> Result<()> {
-    let puller = PullerMgr::singleton().get_or_new_puller(&req.topic)?;
-    puller.try_send(PullMsg(req))?;
-    Ok(())
+  async fn handle_pull_req(&self, req: PullReq) -> Result<ProtocolMsg> {
+    let r#ref = req.r#ref;
+    if let Some(puller) = PullerMgr::singleton().get_puller(&req.topic) {
+      puller.try_send(PullMsg(req))?;
+      Ok(maxwell_protocol::ProtocolMsg::None)
+    } else {
+      if TOPIC_CHECKER.check(&req.topic).await? {
+        let puller = PullerMgr::singleton().get_or_new_puller(&req.topic)?;
+        puller.try_send(PullMsg(req))?;
+        Ok(maxwell_protocol::ProtocolMsg::None)
+      } else {
+        Ok(
+          maxwell_protocol::ErrorRep {
+            code: ErrorCode::UnknownTopic as i32,
+            desc: format!("Unknown topic: {:?}", req.topic),
+            r#ref,
+          }
+          .into_enum(),
+        )
+      }
+    }
   }
 }
 
@@ -156,20 +191,20 @@ impl Actor for Handler {
   type Context = ws::WebsocketContext<Self>;
 
   fn started(&mut self, ctx: &mut Self::Context) {
-    log::info!("Handler actor started: id: {:?}", self.inner.id);
+    log::debug!("Handler actor started: id: {:?}", self.inner.id);
     let address = ctx.address().recipient();
     self.inner.id_address_map.add(self.inner.id, address.clone());
     self.inner.assign_address(address);
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {
-    log::info!("Handler actor stopping: id: {:?}", self.inner.id);
+    log::debug!("Handler actor stopping: id: {:?}", self.inner.id);
     self.inner.id_address_map.remove(self.inner.id);
     Running::Stop
   }
 
   fn stopped(&mut self, _: &mut Self::Context) {
-    log::info!("Handler actor stopped: id: {:?}", self.inner.id);
+    log::debug!("Handler actor stopped: id: {:?}", self.inner.id);
   }
 }
 
