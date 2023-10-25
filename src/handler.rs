@@ -161,7 +161,7 @@ impl HandlerInner {
         Ok(
           maxwell_protocol::ErrorRep {
             code: ErrorCode::UnknownTopic as i32,
-            desc: format!("Unknown topic: {:?}", req.topic),
+            desc: format!("Unknown topic: {}", req.topic),
             r#ref,
           }
           .into_enum(),
@@ -184,7 +184,7 @@ impl HandlerInner {
         Ok(
           maxwell_protocol::Error2Rep {
             code: ErrorCode::UnknownTopic as i32,
-            desc: format!("Unknown topic: {:?}", req.topic),
+            desc: format!("Unknown topic: {}", req.topic),
             conn0_ref: req.conn0_ref,
             conn1_ref: self.id,
             r#ref: req.r#ref,
