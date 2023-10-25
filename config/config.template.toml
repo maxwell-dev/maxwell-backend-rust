@@ -20,7 +20,7 @@ max_offset_dif = 1000
 max_seconds_elapsed = 300
 puller_mgr_capacity = 100000
 
-[topic_localizer]
+[topic_checker]
 cache_size = 100000
 
 [db]

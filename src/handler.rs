@@ -88,7 +88,7 @@ impl HandlerInner {
       ProtocolMsg::PingReq(req) => maxwell_protocol::PingRep { r#ref: req.r#ref }.into_enum(),
       ProtocolMsg::PushReq(req) => {
         let r#ref = req.r#ref;
-        match self.handle_push_req(req).await {
+        match self.try_handle_push_msg(req).await {
           Ok(rep) => rep,
           Err(err) => {
             log::error!("Failed to push: err: {:?}", err);
@@ -103,16 +103,18 @@ impl HandlerInner {
         }
       }
       ProtocolMsg::PullReq(mut req) => {
-        let r#ref = req.r#ref;
         req.conn1_ref = self.id;
-        match self.handle_pull_req(req).await {
+        let r#ref = req.r#ref;
+        let conn0_ref = req.conn0_ref;
+        match self.try_handle_pull_msg(req).await {
           Ok(rep) => rep,
           Err(err) => {
             log::error!("Failed to pull: err: {:?}", err);
-
-            maxwell_protocol::ErrorRep {
+            maxwell_protocol::Error2Rep {
               code: ErrorCode::FailedToPull as i32,
               desc: format!("Failed to pull: err: {:?}", err),
+              conn0_ref: conn0_ref,
+              conn1_ref: self.id,
               r#ref,
             }
             .into_enum()
@@ -121,7 +123,6 @@ impl HandlerInner {
       }
       other => {
         log::error!("Received unknown msg: {:?}", other);
-
         maxwell_protocol::ErrorRep {
           code: ErrorCode::UnknownMsg as i32,
           desc: format!("Received unknown msg: {:?}", other),
@@ -146,8 +147,8 @@ impl HandlerInner {
   }
 
   #[inline]
-  async fn handle_push_req(&self, req: PushReq) -> Result<ProtocolMsg> {
-    let r#ref = req.r#ref;
+  async fn try_handle_push_msg(&self, req: PushReq) -> Result<ProtocolMsg> {
+    let r#ref: u32 = req.r#ref;
     if let Some(pusher) = PusherMgr::singleton().get_pusher(&req.topic) {
       pusher.push(req)?;
       Ok(maxwell_protocol::PushRep { r#ref }.into_enum())
@@ -170,8 +171,7 @@ impl HandlerInner {
   }
 
   #[inline]
-  async fn handle_pull_req(&self, req: PullReq) -> Result<ProtocolMsg> {
-    let r#ref = req.r#ref;
+  async fn try_handle_pull_msg(&self, req: PullReq) -> Result<ProtocolMsg> {
     if let Some(puller) = PullerMgr::singleton().get_puller(&req.topic) {
       puller.try_send(PullMsg(req))?;
       Ok(maxwell_protocol::ProtocolMsg::None)
@@ -182,10 +182,12 @@ impl HandlerInner {
         Ok(maxwell_protocol::ProtocolMsg::None)
       } else {
         Ok(
-          maxwell_protocol::ErrorRep {
+          maxwell_protocol::Error2Rep {
             code: ErrorCode::UnknownTopic as i32,
             desc: format!("Unknown topic: {:?}", req.topic),
-            r#ref,
+            conn0_ref: req.conn0_ref,
+            conn1_ref: self.id,
+            r#ref: req.r#ref,
           }
           .into_enum(),
         )

@@ -47,12 +47,10 @@ impl TopicChecker {
                 Ok(false)
               }
             }
-            err => {
-              Err(Error::msg(format!("Failed to check topic: topic: {:?}, err: {:?}", topic, err)))
-            }
+            err => Err(Error::msg(format!("Failed to check topic: {:?}, err: {:?}", topic, err))),
           },
           Err(err) => {
-            Err(Error::msg(format!("Failed to check topic: topic: {:?}, err: {:?}", topic, err)))
+            Err(Error::msg(format!("Failed to check topic: {:?}, err: {:?}", topic, err)))
           }
         }
       })
