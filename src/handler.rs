@@ -104,7 +104,7 @@ impl HandlerInner {
           Ok(_) => maxwell_protocol::PushRep { r#ref }.into_enum(),
           Err(err) => {
             if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
-              log::error!("Unknown topic: {}", down_err.topic);
+              log::error!("Pushing to unknown topic: {}", down_err.topic);
               maxwell_protocol::ErrorRep {
                 code: ErrorCode::UnknownTopic as i32,
                 desc: format!("Unknown topic: {}", down_err.topic),
@@ -131,7 +131,7 @@ impl HandlerInner {
           Ok(_) => maxwell_protocol::ProtocolMsg::None,
           Err(err) => {
             if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
-              log::error!("Unknown topic: {}", down_err.topic);
+              log::error!("Pulling from unknown topic: {}", down_err.topic);
               maxwell_protocol::Error2Rep {
                 code: ErrorCode::UnknownTopic as i32,
                 desc: format!("Unknown topic: {}", down_err.topic),
