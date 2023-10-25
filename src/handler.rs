@@ -1,5 +1,6 @@
 use std::{
   cell::RefCell,
+  fmt::{Display, Error as StdError, Formatter},
   rc::Rc,
   sync::atomic::{AtomicU32, Ordering},
 };
@@ -11,6 +12,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use maxwell_protocol::{self, *};
 use once_cell::sync::OnceCell;
+use thiserror::Error as ThisError;
 
 use crate::{
   puller::{PullMsg, PullerMgr},
@@ -61,6 +63,16 @@ impl IdAddressMap {
   }
 }
 
+#[derive(ThisError, Debug)]
+struct UnknownTopicError {
+  topic: String,
+}
+impl Display for UnknownTopicError {
+  fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), StdError> {
+    write!(fmt, "Unknown topic: {}", self.topic)
+  }
+}
+
 #[derive(Debug, Clone)]
 struct HandlerInner {
   id: u32,
@@ -89,35 +101,56 @@ impl HandlerInner {
       ProtocolMsg::PushReq(req) => {
         let r#ref = req.r#ref;
         match self.try_handle_push_msg(req).await {
-          Ok(rep) => rep,
+          Ok(_) => maxwell_protocol::PushRep { r#ref }.into_enum(),
           Err(err) => {
-            log::error!("Failed to push: err: {:?}", err);
-
-            maxwell_protocol::ErrorRep {
-              code: ErrorCode::FailedToPush as i32,
-              desc: format!("Failed to push: err: {:?}", err),
-              r#ref,
+            if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
+              log::error!("Unknown topic: {}", down_err.topic);
+              maxwell_protocol::ErrorRep {
+                code: ErrorCode::UnknownTopic as i32,
+                desc: format!("Unknown topic: {}", down_err.topic),
+                r#ref,
+              }
+              .into_enum()
+            } else {
+              log::error!("Failed to push: err: {:?}", err);
+              maxwell_protocol::ErrorRep {
+                code: ErrorCode::FailedToPush as i32,
+                desc: format!("Failed to push: err: {:?}", err),
+                r#ref,
+              }
+              .into_enum()
             }
-            .into_enum()
           }
         }
       }
       ProtocolMsg::PullReq(mut req) => {
         req.conn1_ref = self.id;
-        let r#ref = req.r#ref;
         let conn0_ref = req.conn0_ref;
+        let r#ref = req.r#ref;
         match self.try_handle_pull_msg(req).await {
-          Ok(rep) => rep,
+          Ok(_) => maxwell_protocol::ProtocolMsg::None,
           Err(err) => {
-            log::error!("Failed to pull: err: {:?}", err);
-            maxwell_protocol::Error2Rep {
-              code: ErrorCode::FailedToPull as i32,
-              desc: format!("Failed to pull: err: {:?}", err),
-              conn0_ref: conn0_ref,
-              conn1_ref: self.id,
-              r#ref,
+            if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
+              log::error!("Unknown topic: {}", down_err.topic);
+              maxwell_protocol::Error2Rep {
+                code: ErrorCode::UnknownTopic as i32,
+                desc: format!("Unknown topic: {}", down_err.topic),
+                conn0_ref: conn0_ref,
+                conn1_ref: self.id,
+                r#ref,
+              }
+              .into_enum()
+            } else {
+              log::error!("Failed to pull: err: {:?}", err);
+              maxwell_protocol::Error2Rep {
+                code: ErrorCode::FailedToPull as i32,
+                desc: format!("Failed to pull: err: {:?}", err),
+                conn0_ref: conn0_ref,
+                conn1_ref: self.id,
+                r#ref,
+              }
+              .into_enum()
             }
-            .into_enum()
           }
         }
       }
@@ -147,50 +180,33 @@ impl HandlerInner {
   }
 
   #[inline]
-  async fn try_handle_push_msg(&self, req: PushReq) -> Result<ProtocolMsg> {
-    let r#ref: u32 = req.r#ref;
+  async fn try_handle_push_msg(&self, req: PushReq) -> Result<()> {
     if let Some(pusher) = PusherMgr::singleton().get_pusher(&req.topic) {
       pusher.push(req)?;
-      Ok(maxwell_protocol::PushRep { r#ref }.into_enum())
+      Ok(())
     } else {
       if TOPIC_CHECKER.check(&req.topic).await? {
         let pusher = PusherMgr::singleton().get_or_new_pusher(&req.topic)?;
         pusher.push(req)?;
-        Ok(maxwell_protocol::PushRep { r#ref }.into_enum())
+        Ok(())
       } else {
-        Ok(
-          maxwell_protocol::ErrorRep {
-            code: ErrorCode::UnknownTopic as i32,
-            desc: format!("Unknown topic: {}", req.topic),
-            r#ref,
-          }
-          .into_enum(),
-        )
+        Err(UnknownTopicError { topic: req.topic.clone() }.into())
       }
     }
   }
 
   #[inline]
-  async fn try_handle_pull_msg(&self, req: PullReq) -> Result<ProtocolMsg> {
+  async fn try_handle_pull_msg(&self, req: PullReq) -> Result<()> {
     if let Some(puller) = PullerMgr::singleton().get_puller(&req.topic) {
       puller.try_send(PullMsg(req))?;
-      Ok(maxwell_protocol::ProtocolMsg::None)
+      Ok(())
     } else {
       if TOPIC_CHECKER.check(&req.topic).await? {
         let puller = PullerMgr::singleton().get_or_new_puller(&req.topic)?;
         puller.try_send(PullMsg(req))?;
-        Ok(maxwell_protocol::ProtocolMsg::None)
+        Ok(())
       } else {
-        Ok(
-          maxwell_protocol::Error2Rep {
-            code: ErrorCode::UnknownTopic as i32,
-            desc: format!("Unknown topic: {}", req.topic),
-            conn0_ref: req.conn0_ref,
-            conn1_ref: self.id,
-            r#ref: req.r#ref,
-          }
-          .into_enum(),
-        )
+        Err(UnknownTopicError { topic: req.topic.clone() }.into())
       }
     }
   }
