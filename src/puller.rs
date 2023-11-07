@@ -357,7 +357,11 @@ impl PullerMgr {
   #[inline]
   pub fn get_puller(&self, topic: &String) -> Option<Addr<Puller>> {
     if let Some(puller) = self.pullers.get(topic) {
-      Some(puller.clone())
+      if puller.connected() {
+        Some(puller.clone())
+      } else {
+        None
+      }
     } else {
       None
     }
