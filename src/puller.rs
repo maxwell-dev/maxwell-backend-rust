@@ -1,6 +1,7 @@
 use std::{
   hash::{Hash, Hasher},
   sync::Arc,
+  time::Duration,
 };
 
 use actix::{prelude::*, Actor, Addr, Message as ActixMessage};
@@ -13,6 +14,7 @@ use indexmap::IndexSet;
 use maxwell_protocol::{self, *};
 use maxwell_utils::prelude::ArbiterPool;
 use once_cell::sync::OnceCell;
+use quanta::Instant;
 use seriesdb::prelude::{Coder, Cursor, Db, Table, TtlTable};
 
 use crate::{
@@ -26,20 +28,21 @@ pub struct Puller {
   table: Arc<TtlTable>,
   last_offset: u64,
   pending_pull_msgs: IndexSet<PullMsg, AHasher>,
-  active_at: u32,
+  active_at: Instant,
 }
 
 impl Actor for Puller {
   type Context = Context<Self>;
 
-  fn started(&mut self, _ctx: &mut Self::Context) {
+  fn started(&mut self, ctx: &mut Self::Context) {
     log::debug!("Puller actor started: topic: {:?}", self.topic);
-    // ctx.run_interval(Duration::from_secs(CONFIG.puller.check_interval as u64), |act, ctx| {
-    //   if act.active_at + CONFIG.puller.idle_timeout < Self::now() {
-    //     log::info!("Idle timeout, stopping the puller actor: topic: {:?}", act.topic);
-    //     ctx.stop();
-    //   }
-    // });
+    ctx.run_interval(Duration::from_secs(CONFIG.puller.check_interval as u64), |act, ctx| {
+      log::debug!("Checking alive for puller actor: topic: {:?}", act.topic);
+      if act.active_at.elapsed() > Duration::from_secs(CONFIG.puller.idle_timeout as u64) {
+        log::info!("Puller actor met idle timeout: topic: {:?}", act.topic);
+        ctx.stop();
+      }
+    });
   }
 
   fn stopping(&mut self, _: &mut Self::Context) -> Running {
@@ -82,7 +85,7 @@ impl Handler<PullMsg> for Puller {
   #[inline]
   fn handle(&mut self, pull_msg: PullMsg, _ctx: &mut Context<Self>) -> Self::Result {
     log::debug!("pull_msg: {:?}", pull_msg);
-    self.active_at = Self::now();
+    self.active_at = Instant::recent();
     if pull_msg.0.offset >= 0 {
       self.pull_since_offset(pull_msg);
     } else {
@@ -121,7 +124,7 @@ impl Puller {
       table,
       last_offset,
       pending_pull_msgs: IndexSet::with_hasher(AHasher::new()),
-      active_at: Self::now(),
+      active_at: Instant::now(),
     })
   }
 
@@ -224,7 +227,7 @@ impl Puller {
         if notify_msg.offset <= pull_req.offset as u64 {
           /*
            * < means rewinded, since the backend was restarted after the db was deleted.
-           * = means the pull_req.offset just equals with notify_msg.offset.
+           * = means the nofity_msg is just the next msg need to be notified.
            */
           Self::do_notify(
             pull_req,
@@ -236,6 +239,9 @@ impl Puller {
           );
           notified_pull_reqs.push(i);
         } else {
+          /*
+           * > means should notify all unnotified msgs since specific offset.
+           */
           let msgs = self.get_since_offset(pull_req.offset as u64, pull_req.limit);
           if msgs.len() > 0 {
             Self::do_notify(pull_req, msgs);
@@ -282,6 +288,10 @@ impl Puller {
 
   #[inline]
   fn adjust_offset(&self, offset: u64) -> u64 {
+    /*
+     * Adjust the offset to be in valid range:
+     * [self.last_offset - CONFIG.puller.max_offset_dif, self.last_offset + 1].
+     */
     if offset as u64 + CONFIG.puller.max_offset_dif < self.last_offset {
       self.last_offset - CONFIG.puller.max_offset_dif
     } else {

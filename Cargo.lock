@@ -1270,11 +1270,13 @@ dependencies = [
  "maxwell-protocol",
  "maxwell-utils",
  "once_cell",
- "quick_cache 0.4.0 (git+https://github.com/xuchaoqian/quick-cache.git?branch=master)",
+ "quanta",
+ "quick_cache",
  "serde",
  "serde_derive",
  "seriesdb",
  "thiserror",
+ "tikv-jemallocator",
  "tokio",
 ]
 
@@ -1574,21 +1576,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "quick_cache"
-version = "0.4.0"
+name = "quanta"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f69f8d22fa3f34f3083d9a4375c038732c7a7e964de1beb81c544da92dfc40b8"
+checksum = "9ca0b7bac0b97248c40bb77288fc52029cf1459c0461ea1b05ee32ccf011de2c"
 dependencies = [
- "ahash 0.8.3",
- "equivalent",
- "hashbrown 0.14.0",
- "parking_lot",
+ "crossbeam-utils",
+ "libc",
+ "once_cell",
+ "raw-cpuid",
+ "wasi",
+ "web-sys",
+ "winapi",
 ]
 
 [[package]]
 name = "quick_cache"
-version = "0.4.0"
-source = "git+https://github.com/xuchaoqian/quick-cache.git?branch=master#94e674ab4422644b8c2c845bea4277051250f023"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58c20af3800cee5134b79a3bd4a3d4b583c16ccfa5f53338f46400851a5b3819"
 dependencies = [
  "ahash 0.8.3",
  "equivalent",
@@ -1633,6 +1639,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
+]
+
+[[package]]
+name = "raw-cpuid"
+version = "11.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d86a7c4638d42c44551f4791a20e687dbb4c3de1f33c43dd71e355cd429def1"
+dependencies = [
+ "bitflags 2.4.0",
 ]
 
 [[package]]
@@ -1875,7 +1890,7 @@ dependencies = [
  "concurrent-initializer",
  "log",
  "prost",
- "quick_cache 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quick_cache",
  "rocksdb",
  "thiserror",
 ]
@@ -2005,6 +2020,26 @@ dependencies = [
  "libc",
  "redox_syscall 0.2.16",
  "winapi",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.5.4+5.3.0-patched"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9402443cb8fd499b6f327e40565234ff34dbda27460c5b47db0db77443dd85d1"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "965fe0c26be5c56c94e38ba547249074803efd52adfb66de62107d95aab3eaca"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
