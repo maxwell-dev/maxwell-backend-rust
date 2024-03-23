@@ -283,7 +283,7 @@ impl Puller {
 
   #[inline]
   fn remove_from_pendings(&mut self, pull_msg: &PullMsg) {
-    self.pending_pull_msgs.remove(pull_msg);
+    self.pending_pull_msgs.swap_remove(pull_msg);
   }
 
   #[inline]

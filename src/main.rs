@@ -20,6 +20,8 @@ use crate::{config::CONFIG, handler::Handler, registrar::Registrar, topic_cleane
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+static SERVER_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
+
 async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
   let resp = ws::WsResponseBuilder::new(Handler::new(), &req, stream)
     .frame_size(CONFIG.server.max_frame_size)
@@ -36,7 +38,10 @@ async fn main() {
   TopicCleaner::new().start();
 
   HttpServer::new(move || {
-    App::new().wrap(middleware::Logger::default()).route("/$ws", web::get().to(ws))
+    App::new()
+      .wrap(middleware::Logger::default())
+      .wrap(middleware::DefaultHeaders::new().add(("Server", SERVER_NAME)))
+      .route("/$ws", web::get().to(ws))
   })
   .backlog(CONFIG.server.backlog)
   .keep_alive(CONFIG.server.keep_alive)
