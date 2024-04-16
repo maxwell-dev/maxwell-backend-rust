@@ -16,6 +16,7 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
+  pub id: String,
   pub http_port: u32,
   pub backlog: u32,
   #[serde(deserialize_with = "deserialize_keep_alive", default)]

@@ -1,6 +1,7 @@
 [server]
 backlog = 2048
 http_port = 20000
+id = "backend-0"
 keep_alive = 5
 max_connection_rate = 1024
 max_connections = 100000
