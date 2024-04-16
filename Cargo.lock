@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "maxwell-backend"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "actix",
  "actix-web",
@@ -1273,7 +1273,7 @@ dependencies = [
  "maxwell-utils",
  "once_cell",
  "quanta",
- "quick_cache",
+ "quick_cache 0.5.1",
  "serde",
  "serde_derive",
  "seriesdb",
@@ -1284,8 +1284,8 @@ dependencies = [
 
 [[package]]
 name = "maxwell-protocol"
-version = "0.23.0"
-source = "git+https://github.com/maxwell-dev/maxwell-protocol-rust.git?tag=v0.23.0#460a6044c04c1ca718064cbf2b33f814bbecf757"
+version = "0.23.1"
+source = "git+https://github.com/maxwell-dev/maxwell-protocol-rust.git?tag=v0.23.1#168219d6a1f20dca9847a460718aceebd9d78d00"
 dependencies = [
  "actix",
  "bytes",
@@ -1295,8 +1295,8 @@ dependencies = [
 
 [[package]]
 name = "maxwell-utils"
-version = "0.10.27"
-source = "git+https://github.com/maxwell-dev/maxwell-utils-rust.git?tag=v0.10.27#76c16d67cc20077eb572d68094d0289e6a09e3ba"
+version = "0.10.28"
+source = "git+https://github.com/maxwell-dev/maxwell-utils-rust.git?tag=v0.10.28#2766b229cbdf292521f175e4dc9c11d2ae59eaca"
 dependencies = [
  "actix",
  "ahash",
@@ -1625,6 +1625,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick_cache"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "347e1a588d1de074eeb3c00eadff93db4db65aeb62aee852b1efd0949fe65b6c"
+dependencies = [
+ "ahash",
+ "equivalent",
+ "hashbrown 0.14.3",
+ "parking_lot",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1867,7 +1879,7 @@ dependencies = [
  "concurrent-initializer",
  "log",
  "prost",
- "quick_cache",
+ "quick_cache 0.4.2",
  "rocksdb",
  "thiserror",
 ]
