@@ -22,6 +22,10 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 static SERVER_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
 
+async fn health(_req: HttpRequest) -> Result<HttpResponse, Error> {
+  Ok(HttpResponse::Ok().body(""))
+}
+
 async fn ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
   let resp = ws::WsResponseBuilder::new(Handler::new(), &req, stream)
     .frame_size(CONFIG.server.max_frame_size)
@@ -41,6 +45,7 @@ async fn main() {
     App::new()
       .wrap(middleware::Logger::default())
       .wrap(middleware::DefaultHeaders::new().add(("Server", SERVER_NAME)))
+      .route("/$health", web::get().to(health))
       .route("/$ws", web::get().to(ws))
   })
   .backlog(CONFIG.server.backlog)
