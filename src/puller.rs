@@ -97,6 +97,7 @@ impl Handler<PullMsg> for Puller {
 #[derive(Debug, ActixMessage)]
 #[rtype(result = "()")]
 pub struct NotifyMsg {
+  #[allow(dead_code)]
   pub topic: String,
   pub offset: u64,
   pub value: Bytes,
