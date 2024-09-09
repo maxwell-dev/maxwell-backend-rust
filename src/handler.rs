@@ -104,7 +104,7 @@ impl HandlerInner {
           Ok(_) => maxwell_protocol::PushRep { r#ref }.into_enum(),
           Err(err) => {
             if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
-              log::error!("Pushing to unknown topic: {}", down_err.topic);
+              log::error!("Pushing to unknown topic: {:?}", down_err.topic);
               maxwell_protocol::ErrorRep {
                 code: ErrorCode::UnknownTopic as i32,
                 desc: format!("Unknown topic: {}", down_err.topic),
@@ -115,7 +115,7 @@ impl HandlerInner {
               log::error!("Failed to push: err: {:?}", err);
               maxwell_protocol::ErrorRep {
                 code: ErrorCode::FailedToPush as i32,
-                desc: format!("Failed to push: err: {:?}", err),
+                desc: format!("Failed to push: err: {}", err),
                 r#ref,
               }
               .into_enum()
@@ -131,7 +131,7 @@ impl HandlerInner {
           Ok(_) => maxwell_protocol::ProtocolMsg::None,
           Err(err) => {
             if let Some(down_err) = err.downcast_ref::<UnknownTopicError>() {
-              log::error!("Pulling from unknown topic: {}", down_err.topic);
+              log::error!("Pulling from unknown topic: {:?}", down_err.topic);
               maxwell_protocol::Error2Rep {
                 code: ErrorCode::UnknownTopic as i32,
                 desc: format!("Unknown topic: {}", down_err.topic),
@@ -144,7 +144,7 @@ impl HandlerInner {
               log::error!("Failed to pull: err: {:?}", err);
               maxwell_protocol::Error2Rep {
                 code: ErrorCode::FailedToPull as i32,
-                desc: format!("Failed to pull: err: {:?}", err),
+                desc: format!("Failed to pull: err: {}", err),
                 conn0_ref: conn0_ref,
                 conn1_ref: self.id,
                 r#ref,

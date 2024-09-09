@@ -271,7 +271,7 @@ impl Puller {
       )
     } else {
       log::info!(
-        "The connection<{}> of the frontend<-->backend channel was lost.",
+        "The connection<{:?}> of the frontend<-->backend channel was lost.",
         pull_req.conn1_ref
       );
     }
@@ -330,7 +330,7 @@ impl Puller {
       self.last_offset = last_offset;
     } else {
       log::error!(
-        "last_offset: {} must be greater than self.last_offset: {}",
+        "last_offset: {:?} must be greater than self.last_offset: {:?}",
         last_offset,
         self.last_offset
       );
